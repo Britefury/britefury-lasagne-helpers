@@ -4,6 +4,14 @@ def _add_pad_or_crop(x, y):
         return x[0] + y[0], x[1] + y[1]
     else:
         return x or y
+    
+def _downsample_pad_or_crop(pc, factor, downsampled_size, req_size):
+    if pc is not None:
+        start = pc[0] // factor
+        req = req_size // factor
+        return start, req - downsampled_size - start
+    else:
+        return None
 
 
 TILING_MODE_VALID = 'valid'
@@ -34,10 +42,13 @@ class TilingScheme (object):
                                 mode=self.mode, data_pad_or_crop=self.data_pad_or_crop)
 
     def pad_data_and_tiles(self, padding):
+        if len(padding) != self.ndim:
+            raise ValueError('Dimensionality of padding ({}) does not match dimenstionalty of self ({})'.format(
+                len(padding), self.ndim))
         padding_sum_by_dim = [(p[0] + p[1] if p is not None else 0) for p in padding]
         tile_shape = tuple([t + p for t, p in zip(self.tile_shape, padding_sum_by_dim)])
         data_pad_or_crop = [_add_pad_or_crop(p, q) for p, q in zip(self.data_pad_or_crop, padding)]
-        return TilingScheme(tile_shape, self.step_shape, data_pad_or_crop=data_pad_or_crop)
+        return TilingScheme(tile_shape, self.step_shape, mode=self.mode, data_pad_or_crop=data_pad_or_crop)
 
 
 
@@ -124,10 +135,23 @@ class DataTilingScheme (object):
         return cropping if non_zero else None
 
     def pad_data_and_tiles(self, padding):
+        if len(padding) != self.ndim:
+            raise ValueError('Dimensionality of padding ({}) does not match dimenstionalty of self ({})'.format(
+                len(padding), self.ndim))
         padding_sum_by_dim = [(p[0] + p[1] if p is not None else 0) for p in padding]
         tile_shape = tuple([t + p for t, p in zip(self.tile_shape, padding_sum_by_dim)])
         data_pad_or_crop = [_add_pad_or_crop(p, q) for p, q in zip(self.data_pad_or_crop, padding)]
         return DataTilingScheme(self.data_shape, tile_shape, self.step_shape, data_pad_or_crop=data_pad_or_crop)
+    
+    def downsample(self, factor):
+        if len(factor) != self.ndim:
+            raise ValueError('Dimensionality of factor ({}) does not match dimenstionalty of self ({})'.format(
+                len(factor), self.ndim))
+        data_shape = tuple([s // f   for s, f in zip(self.data_shape, factor)])
+        tile_shape = tuple([s // f   for s, f in zip(self.tile_shape, factor)])
+        step_shape = tuple([s // f   for s, f in zip(self.step_shape, factor)])
+        data_pad_or_crop = [_downsample_pad_or_crop(pc, f, s, r)   for pc, f, s, r in zip(self.data_pad_or_crop, factor, data_shape, self.req_data_shape)]
+        return DataTilingScheme(data_shape, tile_shape, step_shape, data_pad_or_crop=data_pad_or_crop)
 
 
 

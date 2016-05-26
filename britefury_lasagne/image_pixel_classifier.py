@@ -6,31 +6,12 @@ import theano.tensor as T
 
 import lasagne
 
-from . import trainer
+from . import trainer, image_classifier
 
 
 
 
-class TemperatureSoftmax (object):
-    """
-    A softmax function with a temperature setting; increasing it smooths the resulting probabilities.
-    """
-    def __init__(self, temperature=1.0):
-        self._temperature = theano.shared(lasagne.utils.floatX(temperature), 'temperature')
-
-    @property
-    def temperature(self):
-        return 1.0 / self._temperature.get_value()
-
-    @temperature.setter
-    def temperature(self, value):
-        self._temperature.set_value(lasagne.utils.floatX(1.0 / value))
-
-    def __call__(self, x):
-        return lasagne.nonlinearities.softmax(x * self._temperature)
-
-
-class AbstractClassifier (object):
+class AbstractPixelClassifier (object):
     @classmethod
     def for_model(cls, network_build_fn, params_path=None, *args, **kwargs):
         """
@@ -68,8 +49,27 @@ class AbstractClassifier (object):
         return cls(input_var, target_var, network, *args, **kwargs)
 
 
+def _flatten_pixels_lasagne_layer(layer):
+    # (S,C,H,W) -> (C,S,H,W)
+    layer = lasagne.layers.DimshuffleLayer(layer, (1, 0, 2, 3))
+    # (C,S,H,W) -> (C,SHW)
+    layer = lasagne.layers.FlattenLayer(layer, outdim=2)
+    # (C,SHW) -> (SHW,C)
+    layer = lasagne.layers.DimshuffleLayer(layer, (1, 0))
+    return layer
 
-class ImageClassifier (AbstractClassifier):
+def _unflatten_pixels(x, block_shape):
+    # (SHW,C) -> (C,SHW)
+    x = np.rollaxis(x, 1, 0)
+    # (C,SHW) -> (C,S,H,W)
+    x = x.reshape((x.shape[0], -1) + block_shape)
+    # (C,S,H,W) -> (S,C,H,W)
+    x = np.rollaxis(x, 1, 0)
+    return x
+
+
+
+class ImagePixelClassifier (AbstractPixelClassifier):
     def __init__(self, input_var, target_var, final_layer, updates_fn=None):
         """
         Constructor - construct an `ImageClassifier` instance given variables for
@@ -86,9 +86,9 @@ class ImageClassifier (AbstractClassifier):
         self.input_var = input_var
         self.target_var = target_var
         self.final_layer = final_layer
-        self.softmax = TemperatureSoftmax()
+        self.softmax = image_classifier.TemperatureSoftmax()
 
-        network = lasagne.layers.NonlinearityLayer(final_layer, self.softmax)
+        network = lasagne.layers.NonlinearityLayer(_flatten_pixels_lasagne_layer(final_layer), self.softmax)
         self.network = network
 
         # TRAINING
@@ -125,10 +125,16 @@ class ImageClassifier (AbstractClassifier):
 
         # Compile a function performing a training step on a mini-batch (by giving
         # the updates dictionary) and returning the corresponding training loss:
-        self._train_fn = theano.function([input_var, target_var], loss.sum(), updates=updates)
+        t_train_fn = theano.function([input_var, target_var], loss.sum(), updates=updates)
+        def train_fn(x, y):
+            return t_train_fn(x, y.flatten())
+        self._train_fn = train_fn
 
         # Compile a function computing the validation loss and error:
-        self._val_fn = theano.function([input_var, target_var], [eval_loss.sum(), test_err])
+        t_val_fn = theano.function([input_var, target_var], [eval_loss.sum(), test_err])
+        def val_fn(x, y):
+            return t_val_fn(x, y.flatten())
+        self._val_fn = val_fn
 
         # Compile a function computing the predicted probability
         self._predict_prob_fn = theano.function([input_var], eval_prediction)
@@ -169,7 +175,7 @@ class ImageClassifier (AbstractClassifier):
         return ', '.join(items)
 
 
-    def predict_prob(self, X, batchsize=500, temperature=None, batch_xform_fn=None):
+    def predict_prob(self, X, y_shape, batchsize=500, temperature=None, batch_xform_fn=None):
         """
         Predict probabilities for input samples
         :param X: input samples
@@ -184,6 +190,7 @@ class ImageClassifier (AbstractClassifier):
             if batch_xform_fn is not None:
                 batch = batch_xform_fn(batch)
             y_batch = self._predict_prob_fn(batch[0])
+            y_batch = _unflatten_pixels(y_batch, y_shape)
             y.append(y_batch)
         y = np.concatenate(y, axis=0)
         if temperature is not None:
@@ -191,6 +198,6 @@ class ImageClassifier (AbstractClassifier):
         return y
 
 
-    def predict_cls(self, X, batchsize=500, batch_xform_fn=None):
-        prob = self.predict_prob(X, batchsize=batchsize, batch_xform_fn=batch_xform_fn)
+    def predict_cls(self, X, y_shape, batchsize=500, batch_xform_fn=None):
+        prob = self.predict_prob(X, y_shape, batchsize=batchsize, batch_xform_fn=batch_xform_fn)
         return np.argmax(prob, axis=1)

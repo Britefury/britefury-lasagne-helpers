@@ -1,10 +1,11 @@
 import numpy as np
 import skimage.util
+import skimage.transform
 import tiling_scheme
 
 
 class ImageWindowExtractor (object):
-    def __init__(self, images, image_read_fn, tiling, pad_mode='reflect'):
+    def __init__(self, images, image_read_fn, tiling, pad_mode='reflect', downsample=None):
         """
 
         :param images: a list of images to read; these can be paths, IDs, objects
@@ -24,12 +25,17 @@ class ImageWindowExtractor (object):
         if isinstance(tiling, tiling_scheme.TilingScheme):
             tiling = tiling.apply(self.input_img_shape)
 
-        self.tiling = tiling
+        if downsample is not None:
+            if len(downsample) != 2:
+                raise ValueError('dimensionality of downsample ({}) != 2'.format(len(downsample)))
+            ds_tiling = tiling.downsample(downsample)
+        else:
+            ds_tiling = tiling
+        self.tiling = ds_tiling
 
-        self.img_shape = self.tiling.req_data_shape
+        self.img_shape = ds_tiling.req_data_shape
         self.n_channels = img0.shape[2] if len(img0.shape) > 2 else 1
         self.dtype = img0.dtype
-
 
         self.X = np.zeros((self.N_images, self.n_channels) + self.img_shape, dtype=self.dtype)
         for i, img in enumerate(images):
@@ -37,14 +43,21 @@ class ImageWindowExtractor (object):
             assert x.shape[:2] == self.input_img_shape
 
             # Apply padding and cropping
-            cropping = self.tiling.cropping_as_slices
+            cropping = tiling.cropping_as_slices
             if cropping is not None:
                 x = x[cropping[0], cropping[1]]
-            padding = self.tiling.padding
+            padding = tiling.padding
             if padding is not None:
                 if len(x.shape) == 3:
                     padding.append((0, 0))
                 x = skimage.util.pad(x, padding, mode=pad_mode)
+
+            if downsample is not None:
+                if len(x.shape) > 2:
+                    ds = downsample + (1,) * (len(x.shape)-2)
+                else:
+                    ds = downsample
+                x = skimage.transform.downscale_local_mean(x, ds)
 
             if len(x.shape) == 2:
                 x = x[None,:,:]
@@ -52,7 +65,7 @@ class ImageWindowExtractor (object):
                 x = np.rollaxis(x, 2, 0)
             self.X[i,:,:,:] = x
 
-        self.img_windows = self.tiling.tiles
+        self.img_windows = ds_tiling.tiles
 
         self.N = self.N_images * self.img_windows[0] * self.img_windows[1]
 
@@ -221,5 +234,43 @@ class Test_ImageWindowExtractor (unittest.TestCase):
                          img1b[:,30:46,26:42]).all())
         self.assertTrue((wins.get_windows(np.array([1*93*79+34*79+23, 2*93*79+9*79+61]))[:,:,:,:] ==
                          np.append(img1b[None,:,30:46,26:42], img2b[None,:,5:21, 64:80], axis=0)).all())
+
+
+    def test_stepped_downsamples(self):
+        img0 = np.random.uniform(0.0, 1.0, size=(100,100,3))
+        img1 = np.random.uniform(0.0, 1.0, size=(100,100,3))
+        img2 = np.random.uniform(0.0, 1.0, size=(100,100,3))
+        img3 = np.random.uniform(0.0, 1.0, size=(100,100,3))
+        img0b = np.rollaxis(skimage.transform.downscale_local_mean(img0, (2,4,1)), 2, 0)
+        img1b = np.rollaxis(skimage.transform.downscale_local_mean(img1, (2,4,1)), 2, 0)
+        img2b = np.rollaxis(skimage.transform.downscale_local_mean(img2, (2,4,1)), 2, 0)
+        img3b = np.rollaxis(skimage.transform.downscale_local_mean(img3, (2,4,1)), 2, 0)
+
+        wins = ImageWindowExtractor(images=[img0, img1, img2, img3], image_read_fn=lambda x: x,
+                                    tiling=tiling_scheme.TilingScheme(tile_shape=(16, 16), step_shape=(8,8)),
+                                    downsample=(2,4))
+
+        self.assertEqual(wins.tiling.tile_shape, (8, 4))
+        self.assertEqual(wins.N_images, 4)
+        self.assertEqual(wins.input_img_shape, (100, 100))
+        self.assertEqual(wins.img_shape, (48, 24))
+        self.assertEqual(wins.n_channels, 3)
+        self.assertEqual(wins.X.shape, (4,3,48,24))
+        self.assertTrue((wins.X[0,:,:,:] == img0b[:,:48,:24]).all())
+        self.assertTrue((wins.X[1,:,:,:] == img1b[:,:48,:24]).all())
+        self.assertTrue((wins.X[2,:,:,:] == img2b[:,:48,:24]).all())
+        self.assertTrue((wins.X[3,:,:,:] == img3b[:,:48,:24]).all())
+        self.assertEqual(wins.img_windows, (11, 11))
+        self.assertEqual(wins.N, 11*11*4)
+
+        self.assertTrue((wins.get_windows_by_coords(np.array([[1, 3, 8]]))[0,:,:,:] ==
+                         img1b[:,12:20,16:20]).all())
+        self.assertTrue((wins.get_windows_by_coords(np.array([[1, 3, 8], [2, 9, 6]]))[:,:,:,:] ==
+                         np.append(img1b[None,:,12:20,16:20], img2b[None,:,36:44, 12:16], axis=0)).all())
+
+        self.assertTrue((wins.get_windows(np.array([1*11*11+3*11+8]))[0,:,:,:] ==
+                         img1b[:,12:20,16:20]).all())
+        self.assertTrue((wins.get_windows(np.array([1*11*11+3*11+8, 2*11*11+9*11+6]))[:,:,:,:] ==
+                         np.append(img1b[None,:,12:20,16:20], img2b[None,:,36:44, 12:16], axis=0)).all())
 
 

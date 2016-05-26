@@ -47,7 +47,7 @@ def iterate_minibatches(data, batchsize, shuffle=False):
     if shuffle:
         indices = np.arange(N)
         np.random.shuffle(indices)
-    for start_idx in range(0, N - batchsize + 1, batchsize):
+    for start_idx in range(0, N, batchsize):
         if shuffle:
             excerpt = indices[start_idx:start_idx + batchsize]
         else:
