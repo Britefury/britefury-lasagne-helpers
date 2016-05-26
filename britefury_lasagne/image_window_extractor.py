@@ -70,12 +70,15 @@ class ImageWindowExtractor (object):
         self.N = self.N_images * self.img_windows[0] * self.img_windows[1]
 
 
-    def get_windows(self, indices):
+    def window_indices_to_coords(self, indices):
         block_x = indices % self.img_windows[1]
         block_y = (indices / self.img_windows[1]) % self.img_windows[0]
         img_i = (indices / (self.img_windows[0] * self.img_windows[1]))
-        return self.get_windows_by_coords(np.concatenate([img_i[:,None], block_y[:,None], block_x[:,None]], axis=1))
+        return img_i, block_y, block_x
 
+    def get_windows(self, indices):
+        img_i, block_y, block_x = self.window_indices_to_coords(indices)
+        return self.get_windows_by_coords(np.concatenate([img_i[:,None], block_y[:,None], block_x[:,None]], axis=1))
 
     def get_windows_by_coords(self, coords):
         """
