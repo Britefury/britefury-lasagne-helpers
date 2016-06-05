@@ -6,7 +6,7 @@ import theano.tensor as T
 
 import lasagne
 
-from . import trainer, image_classifier
+from . import trainer, dnn_objective
 
 
 
@@ -86,7 +86,7 @@ class ImagePixelClassifier (AbstractPixelClassifier):
         self.input_var = input_var
         self.target_var = target_var
         self.final_layer = final_layer
-        self.softmax = image_classifier.TemperatureSoftmax()
+        self.softmax = dnn_objective.TemperatureSoftmax()
 
         network = lasagne.layers.NonlinearityLayer(_flatten_pixels_lasagne_layer(final_layer), self.softmax)
         self.network = network
