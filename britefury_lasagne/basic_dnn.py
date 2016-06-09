@@ -130,44 +130,63 @@ class BasicDNN (object):
         return [np.concatenate(chn, axis=0) for chn in zip(*y)]
 
 
-def vector_classifier(network_build_fn, params_path=None, *args, **kwargs):
+def vector_classifier(network_build_fn, n_target_dim=0, params_path=None, *args, **kwargs):
     """
     Construct a vector classifier, given a network building function
     and an optional path from which to load parameters.
     :param network_build_fn: network builder function of the form `fn(input_var, **kwargs) -> lasagne_layer`
     that constructs a network in the form of a Lasagne layer, given an input variable (a Theano variable)
+    :param n_target_dim: the number of dimensions in the target;
+        0 for predict per sample with ivector variable type
+        1 for 1-dimensional prediction e.g. time series, with itensor3 variable type (sample, channel (1), time),
+        2 for 2-dimensional prediction e.g. image, with itensor4 variable type (sample, channel (1), height, width),
     :param params_path: [optional] path from which to load network parameters
     :return: a classifier instance
     """
     input_vars = [T.matrix('input')]
-    return classifier(input_vars, network_build_fn, params_path=params_path)
+    return classifier(input_vars, network_build_fn, n_target_dim=n_target_dim, params_path=params_path)
 
 
-def image_classifier(network_build_fn, params_path=None, *args, **kwargs):
+def image_classifier(network_build_fn, n_target_dim=0, params_path=None, *args, **kwargs):
     """
     Construct an image classifier, given a network building function
     and an optional path from which to load parameters.
     :param network_build_fn: network builder function of the form `fn(input_var, **kwargs) -> lasagne_layer`
     that constructs a network in the form of a Lasagne layer, given an input variable (a Theano variable)
+    :param n_target_dim: the number of dimensions in the target;
+        0 for predict per sample with ivector variable type
+        1 for 1-dimensional prediction e.g. time series, with itensor3 variable type (sample, channel (1), time),
+        2 for 2-dimensional prediction e.g. image, with itensor4 variable type (sample, channel (1), height, width),
     :param params_path: [optional] path from which to load network parameters
     :return: a classifier instance
     """
     input_vars = [T.tensor4('input')]
-    return classifier(input_vars, network_build_fn, params_path=params_path)
+    return classifier(input_vars, network_build_fn, n_target_dim=n_target_dim, params_path=params_path)
 
 
-def classifier(input_vars, network_build_fn, params_path=None, *args, **kwargs):
+def classifier(input_vars, network_build_fn, n_target_dim=0, params_path=None, *args, **kwargs):
     """
     Construct a classifier, given input variables and a network building function
     and an optional path from which to load parameters.
     :param input_vars: a list of input variables
     :param network_build_fn: network builder function of the form `fn(input_var, **kwargs) -> lasagne_layer`
     that constructs a network in the form of a Lasagne layer, given an input variable (a Theano variable)
+    :param n_target_dim: the number of dimensions in the target;
+        0 for predict per sample with ivector variable type
+        1 for 1-dimensional prediction e.g. time series, with itensor3 variable type (sample, channel (1), time),
+        2 for 2-dimensional prediction e.g. image, with itensor4 variable type (sample, channel (1), height, width),
     :param params_path: [optional] path from which to load network parameters
     :return: a classifier instance
     """
     # Prepare Theano variables for inputs and targets
-    target_var = T.ivector('y')
+    if n_target_dim == 0:
+        target_var = T.ivector('y')
+    elif n_target_dim == 1:
+        target_var = T.itensor3('y')
+    elif n_target_dim == 2:
+        target_var = T.itensor4('y')
+    else:
+        raise ValueError('Valid values for n_target_dim are 0, 1, or 2, not {}'.format(n_target_dim))
 
     # Build the network
     print("Building model and compiling functions...")
