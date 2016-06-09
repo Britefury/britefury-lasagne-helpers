@@ -5,7 +5,7 @@ import lasagne
 from . import trainer, dnn_objective
 
 
-class SampleDNN (object):
+class BasicDNN (object):
     def __init__(self, input_vars, target_vars, final_layers, objectives, updates_fn=None,
                  params_path=None):
         """
@@ -173,9 +173,9 @@ def classifier(input_vars, network_build_fn, params_path=None, *args, **kwargs):
     print("Building model and compiling functions...")
     network = network_build_fn(input_vars=input_vars)
 
-    objective = dnn_objective.SampleClassifierObjective('y', network, target_var)
+    objective = dnn_objective.ClassifierObjective('y', network, target_var)
 
-    return SampleDNN(input_vars, [target_var], network, [objective], params_path=params_path, *args, **kwargs)
+    return BasicDNN(input_vars, [target_var], network, [objective], params_path=params_path, *args, **kwargs)
 
 
 def vector_regressor(network_build_fn, params_path=None, *args, **kwargs):
@@ -223,4 +223,4 @@ def regressor(input_vars, network_build_fn, params_path=None, *args, **kwargs):
 
     objective = dnn_objective.RegressorObjective('y', network, target_var)
 
-    return SampleDNN(input_vars, [target_var], network, [objective], params_path=params_path, *args, **kwargs)
+    return BasicDNN(input_vars, [target_var], network, [objective], params_path=params_path, *args, **kwargs)

@@ -39,21 +39,41 @@ def _flatten_spatial_lasagne_layer(layer):
         layer = lasagne.layers.DimshuffleLayer(layer, (1, 0))
     return layer, spatial_shape, n_channels
 
-def _flatten_spatial(x):
-    ndims = len(x.shape)
-    n_channels = x.shape[1]
-    if ndims > 2:
+def _flatten_spatial_theano(x, n_channels):
+    ndim = x.ndim
+    if ndim > 2:
+        spatial = tuple(range(2, ndim))
         # (Sample,Channel,Spatial...) -> (Sample,Spatial...,Channel)
-        x = np.rollaxis(x, 1, ndims)
+        x = x.dimshuffle((0,) + spatial + (1,))
+        # (Sample,Spatial...,Channel) -> (Sample:Spatial...,Channel)
+        x = x.reshape((-1, n_channels))
+    return x
+
+def _unflatten_spatial_theano(x, spatial_shape, n_channels):
+    n_spatial = len(spatial_shape)
+    if n_spatial > 0:
+        # (Sample:spatial...,Channel) -> (Sample,Spatial...,Channel)
+        x = x.reshape((-1,) + spatial_shape + (n_channels,))
+        # (Sample,Spatial...,Channel) -> (Sample,Channel,Spatial...)
+        x = x.dimshuffle((0, n_spatial+1,) + tuple(range(1,n_spatial+1)))
+    return x
+
+def _flatten_spatial(x, n_channels):
+    ndim = len(x.shape)
+    if ndim > 2:
+        # (Sample,Channel,Spatial...) -> (Sample,Spatial...,Channel)
+        x = np.rollaxis(x, 1, ndim)
         # (Sample,Spatial...,Channel) -> (Sample:Spatial...,Channel)
         x = x.reshape((-1, n_channels))
     return x
 
 def _unflatten_spatial(x, spatial_shape, n_channels):
-    # (Sample:spatial...,Channel) -> (Sample,Spatial...,Channel)
-    x = x.reshape((-1,) + spatial_shape + (n_channels,))
-    # (Sample,Spatial...,Channel) -> (Sample,Channel,Spatial...)
-    x = np.rollaxis(x, 3, 1)
+    n_spatial = len(spatial_shape)
+    if n_spatial > 0:
+        # (Sample:spatial...,Channel) -> (Sample,Spatial...,Channel)
+        x = x.reshape((-1,) + spatial_shape + (n_channels,))
+        # (Sample,Spatial...,Channel) -> (Sample,Channel,Spatial...)
+        x = np.rollaxis(x, 3, 1)
     return x
 
 
@@ -81,29 +101,47 @@ class AbstractObjective (object):
 
 
 
-class AbstractClassifierObjective (AbstractObjective):
+class ClassifierObjective (AbstractObjective):
     def __init__(self, name, objective_layer, target_expr, cost_weight=1.0):
-        super(AbstractClassifierObjective, self).__init__(name, cost_weight)
+        super(ClassifierObjective, self).__init__(name, cost_weight)
         self.objective_layer = objective_layer
         self.target_expr = target_expr
 
 
-    def _build_classifier(self, prob_layer):
+    def build(self):
+        flat_target = _flatten_spatial_theano(self.target_expr, 1)
+        if flat_target.ndim == 2:
+            flat_target = flat_target[:,0]
+        elif flat_target.ndim != 1:
+            raise ValueError('target must have 1 or 2 dimensions, not {}'.format(flat_target.ndim))
+
+        # Flatten the objective layer (if the objective layer generates an
+        # output with 2 dimensions then this is a no-op)
+        obj_flat_layer, spatial_shape, n_channels = \
+            _flatten_spatial_lasagne_layer(self.objective_layer)
+
+        # Predicted probability layer
+        softmax = TemperatureSoftmax()
+        prob_layer = lasagne.layers.NonlinearityLayer(obj_flat_layer, softmax)
+
         # Get an expression representing the predicted probability
         train_pred_prob = lasagne.layers.get_output(prob_layer)
 
         # Create a per-sample loss expression for training, i.e., a scalar objective we want
         # to minimize (for our multi-class problem, it is the cross-entropy loss):
-        train_loss_per_sample = lasagne.objectives.categorical_crossentropy(train_pred_prob, self.target_expr)
+        train_loss_per_sample = lasagne.objectives.categorical_crossentropy(train_pred_prob, flat_target)
 
         # Create prediction expressions; use deterministic forward pass (disable
         # dropout layers)
         eval_pred_prob = lasagne.layers.get_output(prob_layer, deterministic=True)
         # Create evaluation loss expression
-        eval_loss_per_sample = lasagne.objectives.categorical_crossentropy(eval_pred_prob, self.target_expr)
+        eval_loss_per_sample = lasagne.objectives.categorical_crossentropy(eval_pred_prob, flat_target)
         # Create an expression for error count
-        eval_err_count = T.sum(T.neq(T.argmax(eval_pred_prob, axis=1), self.target_expr),
+        eval_err_count = T.sum(T.neq(T.argmax(eval_pred_prob, axis=1), flat_target),
                                      dtype=theano.config.floatX)
+
+        # Unflatten prediction
+        pred_prob = _unflatten_spatial_theano(eval_pred_prob, spatial_shape, n_channels)
 
         def train_results_str_fn(train_res):
             return '{} loss={:.6f}'.format(self.name, train_res[0])
@@ -116,46 +154,7 @@ class AbstractClassifierObjective (AbstractObjective):
                                train_results_str_fn=train_results_str_fn,
                                eval_results=[eval_loss_per_sample.sum(), eval_err_count],
                                eval_results_str_fn=eval_results_str_fn,
-                               prediction=eval_pred_prob)
-
-
-class SampleClassifierObjective (AbstractClassifierObjective):
-    def build(self):
-        softmax = TemperatureSoftmax()
-
-        # Predicted probability layer
-        prob_layer = lasagne.layers.NonlinearityLayer(self.objective_layer, softmax)
-
-        return self._build_classifier(prob_layer)
-
-
-class ConvolutionalClassifierObjective (AbstractClassifierObjective):
-    def __init__(self, name, objective_layer, target_expr, cost_weight=1.0):
-        super(ConvolutionalClassifierObjective, self).__init__(self, name, objective_layer, target_expr,
-                                                               cost_weight)
-        self._spatial_shape = None
-        self._n_channels = None
-    
-    def build(self):
-        softmax = TemperatureSoftmax()
-
-        # Flatten the
-        obj_flat_layer, self._spatial_shape, self._n_channels = \
-            _flatten_spatial_lasagne_layer(self.objective_layer)
-
-        # Predicted probability layer
-        prob_layer = lasagne.layers.NonlinearityLayer(obj_flat_layer, softmax)
-
-        return self._build_classifier(prob_layer)
-
-
-    def transform_input_target(self, x):
-        return _flatten_spatial(x)
-
-    def inv_transform_prediction(self, x):
-        return _unflatten_spatial(x, self._spatial_shape, self._n_channels)
-
-
+                               prediction=pred_prob)
 
 
 class RegressorObjective (AbstractObjective):
