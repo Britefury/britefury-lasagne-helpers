@@ -10,8 +10,8 @@ class ImageWindowExtractor (object):
 
         :param images: a list of images to read; these can be paths, IDs, objects
         :param image_read_fn: an image reader function of the form `fn(image) -> np.array[H,W,C]`
-        :param window_shape: the shape of the windows to be extracted
-        :param step_shape: the step size as a tuple; to step by 4 in Y and 2 in X use `(4,2)`
+        :param tiling: a `tiling_scheme.TilingScheme` instance that describes how windows are to be extracted
+        `from the data
         """
         self.images = images
         self.image_read_fn = image_read_fn

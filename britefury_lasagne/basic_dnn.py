@@ -70,10 +70,11 @@ class BasicDNN (object):
         # Construct a trainer
         self.trainer = trainer.Trainer()
         # Provide with training function
-        self.trainer.train_with(train_batch_fn=self._train_fn,
+        self.trainer.train_with(train_batch_fn=self._train_fn, train_log_fn=self._train_log,
                                 train_epoch_results_check_fn=self._check_train_epoch_results)
         # Evaluate with evaluation function, the second output value - error rate - is used for scoring
-        self.trainer.evaluate_with(eval_batch_fn=self._val_fn, validation_improved_fn=1)
+        self.trainer.evaluate_with(eval_batch_fn=self._val_fn, eval_log_fn=self._eval_log,
+                                   validation_improved_fn=1)
         # Set the epoch logging function
         self.trainer.report(epoch_log_fn=self._epoch_log)
         # Tell the trainer to store parameters when the validation score (error rate) is best
@@ -88,7 +89,21 @@ class BasicDNN (object):
             return None
 
 
-    def _epoch_log(self, epoch_number, delta_time, train_results, val_results, test_results):
+    def _train_log(self, train_results):
+        train_items = []
+        for obj_res, i, j in zip(self.objective_results, self.train_results_indices[:-1],
+                                 self.train_results_indices[1:]):
+            train_items.append(obj_res.train_results_str_fn(train_results[i:j]))
+        return ', '.join(train_items)
+
+    def _eval_log(self, eval_results):
+        eval_items = []
+        for obj_res, i, j in zip(self.objective_results, self.eval_results_indices[:-1],
+                                 self.eval_results_indices[1:]):
+            eval_items.append(obj_res.eval_results_str_fn(eval_results[i:j]))
+        return ', '.join(eval_items)
+
+    def _epoch_log(self, epoch_number, delta_time, train_str, val_str, test_str):
         """
         Epoch logging callback, passed to the `self.trainer.report()`
         """
@@ -96,27 +111,16 @@ class BasicDNN (object):
         items.append('Epoch {}/{} took {:.2f}s:'.format(epoch_number + 1, self.trainer.num_epochs, delta_time))
         items.append('  TRAIN ')
 
-        train_items = []
-        for obj_res, i, j in zip(self.objective_results, self.train_results_indices[:-1],
-                                 self.train_results_indices[1:]):
-            train_items.append(obj_res.train_results_str_fn(train_results[i:j]))
-        items.append(', '.join(train_items))
+        if train_str is not None:
+            items.append(train_str)
 
-        if val_results is not None:
-            val_items = []
+        if val_str is not None:
             items.append('  VAL ')
-            for obj_res, i, j in zip(self.objective_results, self.eval_results_indices[:-1],
-                                     self.eval_results_indices[1:]):
-                val_items.append(obj_res.eval_results_str_fn(val_results[i:j]))
-            items.append(', '.join(val_items))
+            items.append(val_str)
 
-        if test_results is not None:
-            test_items = []
+        if test_str is not None:
             items.append('  TEST ')
-            for obj_res, i, j in zip(self.objective_results, self.eval_results_indices[:-1],
-                                     self.eval_results_indices[1:]):
-                test_items.append(obj_res.eval_results_str_fn(test_results[i:j]))
-            items.append(', '.join(test_items))
+            items.append(test_str)
 
         return ''.join(items)
 
