@@ -55,15 +55,15 @@ def iterate_minibatches(data, batchsize, shuffle=False):
         yield [d[excerpt] for d in data]
 
 
-def _default_epoch_log_fn(epoch_number, delta_time, train_results, val_results, test_results):
-    if val_results is None:
-        return 'Epoch {} ({:.2f}s): train {}'.format(epoch_number, delta_time, train_results)
-    elif test_results is None:
-        return 'Epoch {} ({:.2f}s): train {}, validation {}'.format(epoch_number, delta_time, train_results,
-                                                                    val_results)
+def _default_epoch_log_fn(epoch_number, delta_time, train_str, val_str, test_str):
+    if val_str is None:
+        return 'Epoch {} ({:.2f}s): train {}'.format(epoch_number, delta_time, train_str)
+    elif test_str is None:
+        return 'Epoch {} ({:.2f}s): train {}, validation {}'.format(epoch_number, delta_time, train_str,
+                                                                    val_str)
     else:
-        return 'Epoch {} ({:.2f}s): train {}, validation {} test {}'.format(epoch_number, delta_time, train_results,
-                                                                            val_results, test_results)
+        return 'Epoch {} ({:.2f}s): train {}, validation {} test {}'.format(epoch_number, delta_time, train_str,
+                                                                            val_str, test_str)
 
 
 class TrainingFailedException (Exception):
@@ -112,10 +112,12 @@ class Trainer (object):
         self.batch_xform_fn = None
 
         self.train_batch_fn = None
+        self.train_log_fn = None
         self.train_epoch_results_check_fn = None
         self.train_pass_epoch_number = False
 
         self.eval_batch_fn = None
+        self.eval_log_fn = None
         self.validation_improved_fn = lambda x, y: x[0] < y[0]
         self.validation_interval = None
 
@@ -136,7 +138,7 @@ class Trainer (object):
         self.set_state_fn = None
 
 
-    def train_with(self, train_batch_fn, train_epoch_results_check_fn=None, pass_epoch_number=False):
+    def train_with(self, train_batch_fn, train_log_fn=None, train_epoch_results_check_fn=None, pass_epoch_number=False):
         """
         Set the batch training function. This method *MUST* be called before attempting to use the
         trainer.
@@ -147,6 +149,8 @@ class Trainer (object):
         represent loss/error rates/etc, or `None`. Note that the training function results should
         represent the *sum* of the loss/error rate for that batch as the values will be accumulated
         and divided by the total number of training samples after all mini-batches has been processed.
+        :param train_log_fn: [optional] a function of the form `fn(train_results) -> str` that generates
+        log output for the training results
         :param train_epoch_results_check_fn: [optional] a function of the form
         `f(epoch, train_epoch_results) -> error_reason` that is invoked to check the results returned by
         `train_batch_fn` accumulated during the epoch; if no training failure is detected, it should
@@ -160,11 +164,12 @@ class Trainer (object):
         :return: `self`
         """
         self.train_batch_fn = train_batch_fn
+        self.train_log_fn = train_log_fn
         self.train_epoch_results_check_fn = train_epoch_results_check_fn
         self.train_pass_epoch_number = pass_epoch_number
         return self
 
-    def evaluate_with(self, eval_batch_fn, validation_improved_fn=0):
+    def evaluate_with(self, eval_batch_fn, eval_log_fn=None, validation_improved_fn=0):
         """
         Set the batch validation/test function.
 
@@ -176,6 +181,8 @@ class Trainer (object):
         total number of training samples at the end. Note that for the purpose of detecting improvements
         in validation, *better* results should have *lower* values, or use the `validation_score_fn`
         to provide a function that negates/inverts the score.
+        :param eval_log_fn: [optional] a function of the form `fn(eval_results) -> str` that generates
+        log output for evaluation results
         :param validation_improved_fn: Either an integer index or a callable; if an index then
         improvement is detected via `val_results_new[validation_improved_fn] <
         val_best_so_far[validation_improved_fn]`, if a callable then the
@@ -183,6 +190,7 @@ class Trainer (object):
         :return: `self`
         """
         self.eval_batch_fn = eval_batch_fn
+        self.eval_log_fn = eval_log_fn
         if isinstance(validation_improved_fn, (int, long)):
             self.validation_improved_fn = lambda x, y: x[validation_improved_fn] < y[validation_improved_fn]
         elif callable(validation_improved_fn):
@@ -238,8 +246,10 @@ class Trainer (object):
         a single line report is produced for each epoch. If `VERBOSITY_BATCH` then in addition
         to a single line per epoch
         :param epoch_log_fn: a function that creates a log entry to display an epoch result of the form
-        `fn(epoch_number, delta_time, train_results, val_results, test_results) -> str` that
-        generates a string describing the epoch training results
+        `fn(epoch_number, delta_time, train_str, val_str, test_str) -> str` that
+        generates a string describing the epoch training results, where `train_str`, `val_str` and
+        `test_str` are strings or `None`, that result from invoking the `train_log_fn` or
+        `eval_log_fn` functions passed to the `train_with` and `eval_with` methods.
         :param log_stream: a file-like object to which progress is to be written.
         :param final_result: if True, log a final result
         :return: `self`
@@ -490,8 +500,18 @@ class Trainer (object):
         return self.validation_interval is None  or  epoch % self.validation_interval == 0
 
     def _log_epoch_results(self, epoch, delta_time, train_results, val_results, test_results):
+        train_str = val_str = test_str = None
+        if train_results is not None:
+            train_str = self.train_log_fn(train_results) if self.train_log_fn is not None \
+                else '{}'.format(train_results)
+        if val_results is not None:
+            val_str = self.eval_log_fn(val_results) if self.eval_log_fn is not None \
+                else '{}'.format(val_results)
+        if test_results is not None:
+            test_str = self.eval_log_fn(test_results) if self.eval_log_fn is not None \
+                else '{}'.format(test_results)
         epoch_log_fn = self.epoch_log_fn or _default_epoch_log_fn
-        self._log(epoch_log_fn(epoch, delta_time, train_results, val_results, test_results) + '\n')
+        self._log(epoch_log_fn(epoch, delta_time, train_str, val_str, test_str) + '\n')
 
     def _save_state(self):
         if self.get_state_fn is not None:
@@ -920,10 +940,10 @@ class Test_Trainer (unittest.TestCase):
             if line.strip() != '':
                 pattern = re.escape('Epoch {0} ('.format(i)) + \
                           r'[0-9]+\.[0-9]+s' + \
-                          re.escape('): train [{0}, {1}], validation [{0}, {1}]'.format(val_output[i][0], val_output[i][1]))
+                          re.escape('): train [{0}L, {1}L], validation [{0}L, {1}L]'.format(val_output[i][0], val_output[i][1]))
                 match = re.match(pattern, line)
                 if match is None or match.end(0) != len(line):
-                    self.fail(msg=line)
+                    self.fail(msg='No match "{}" with pattern "{}"'.format(line, pattern))
 
 
     def test_report_verbosity_batch(self):
@@ -948,7 +968,7 @@ class Test_Trainer (unittest.TestCase):
             if line_a.strip() != '' and line_b.strip() != '':
                 pattern_b = re.escape('Epoch {0} ('.format(i)) + \
                           r'[0-9]+\.[0-9]+s' + \
-                          re.escape('): train None, validation [{0}L?, {1}L?]'.format(val_output[i][0], val_output[i][1]))
+                          re.escape('): train None, validation [{0}L, {1}L]'.format(val_output[i][0], val_output[i][1]))
                 self.assertEqual(line_a, '[....]')
                 match = re.match(pattern_b, line_b)
                 if match is None or match.end(0) != len(line_b):
@@ -963,13 +983,19 @@ class Test_Trainer (unittest.TestCase):
         train_fn = self.TrainFunction(train_output)
         eval_fn = self.TrainFunction(val_output)
 
-        def epoch_log_fn(epoch_number, delta_time, train_results, val_results, test_results):
-            return '{}: train: {}, val: {} {}'.format(epoch_number, train_results[0], val_results[0], val_results[1])
+        def train_log(train_results):
+            return '{}'.format(train_results[0])
+
+        def eval_log(val_results):
+            return '{} {}'.format(val_results[0], val_results[1])
+
+        def epoch_log_fn(epoch_number, delta_time, train_str, val_str, test_str):
+            return '{}: train: {}, val: {}'.format(epoch_number, train_str, val_str)
 
         trainer = Trainer()
-        trainer.train_with(train_batch_fn=train_fn)
+        trainer.train_with(train_batch_fn=train_fn, train_log_fn=train_log)
         trainer.train_for(num_epochs=200, min_epochs=65, val_improve_epochs_factor=2)
-        trainer.evaluate_with(eval_fn, validation_improved_fn=lambda a, b: a[1] < b[1])
+        trainer.evaluate_with(eval_fn, eval_log_fn=eval_log, validation_improved_fn=lambda a, b: a[1] < b[1])
         trainer.report(log_stream=log, verbosity=VERBOSITY_EPOCH, epoch_log_fn=epoch_log_fn, final_result=False)
 
         trainer.train([np.arange(5)], [np.arange(5)], None, 5)
@@ -979,5 +1005,5 @@ class Test_Trainer (unittest.TestCase):
         log_lines = log.getvalue().split('\n')
         for i, line in enumerate(log_lines):
             if line.strip() != '':
-                self.assertEqual(line, '{}: train: {}, val: {} {}'.format(i, train_output[i][0], val_output[i][0], val_output[i][1]))
+                self.assertEqual('{}: train: {}, val: {} {}'.format(i, train_output[i][0], val_output[i][0], val_output[i][1]), line)
 
