@@ -12,7 +12,8 @@ class BasicDNN (object):
         Constructor - construct a `SampleDNN` instance given variables for
         input, target and a final layer (a Lasagne layer)
         :param input_vars: input variables, a list of Theano variables
-        :param final_layers: a list of Lasagne layers that will cover the network, in terms of trainable parameters
+        :param final_layers: a list of Lasagne layers that when followed backward will cover
+                result in all layers being visited
         :param objectives: a list of objectives to optimise
         :param updates_fn: [optional] a function of the form `fn(cost, params) -> updates` that
             generates update expressions given the cost and the parameters to update using
@@ -130,13 +131,13 @@ class BasicDNN (object):
         return [np.concatenate(chn, axis=0) for chn in zip(*y)]
 
 
-def vector_classifier(network_build_fn, n_target_dim=0, params_path=None, *args, **kwargs):
+def vector_classifier(network_build_fn, n_target_spatial_dims=0, params_path=None, *args, **kwargs):
     """
     Construct a vector classifier, given a network building function
     and an optional path from which to load parameters.
     :param network_build_fn: network builder function of the form `fn(input_var, **kwargs) -> lasagne_layer`
     that constructs a network in the form of a Lasagne layer, given an input variable (a Theano variable)
-    :param n_target_dim: the number of dimensions in the target;
+    :param n_target_spatial_dims: the number of dimensions in the target;
         0 for predict per sample with ivector variable type
         1 for 1-dimensional prediction e.g. time series, with itensor3 variable type (sample, channel (1), time),
         2 for 2-dimensional prediction e.g. image, with itensor4 variable type (sample, channel (1), height, width),
@@ -144,49 +145,54 @@ def vector_classifier(network_build_fn, n_target_dim=0, params_path=None, *args,
     :return: a classifier instance
     """
     input_vars = [T.matrix('input')]
-    return classifier(input_vars, network_build_fn, n_target_dim=n_target_dim, params_path=params_path)
+    return classifier(input_vars, network_build_fn, n_target_spatial_dims=n_target_spatial_dims,
+                      params_path=params_path)
 
 
-def image_classifier(network_build_fn, n_target_dim=0, params_path=None, *args, **kwargs):
+def image_classifier(network_build_fn, n_target_spatial_dims=0, params_path=None, *args, **kwargs):
     """
     Construct an image classifier, given a network building function
     and an optional path from which to load parameters.
     :param network_build_fn: network builder function of the form `fn(input_var, **kwargs) -> lasagne_layer`
     that constructs a network in the form of a Lasagne layer, given an input variable (a Theano variable)
-    :param n_target_dim: the number of dimensions in the target;
+    :param n_target_spatial_dims: the number of spatial dimensions for the target;
         0 for predict per sample with ivector variable type
-        1 for 1-dimensional prediction e.g. time series, with itensor3 variable type (sample, channel (1), time),
-        2 for 2-dimensional prediction e.g. image, with itensor4 variable type (sample, channel (1), height, width),
+        1 for 1-dimensional prediction e.g. time series, with imatrix variable type (sample, channel (1), time),
+        2 for 2-dimensional prediction e.g. image, with itensor3 variable type (sample, channel (1), height, width),
     :param params_path: [optional] path from which to load network parameters
     :return: a classifier instance
     """
     input_vars = [T.tensor4('input')]
-    return classifier(input_vars, network_build_fn, n_target_dim=n_target_dim, params_path=params_path)
+    return classifier(input_vars, network_build_fn, n_target_spatial_dims=n_target_spatial_dims,
+                      params_path=params_path)
 
 
-def classifier(input_vars, network_build_fn, n_target_dim=0, params_path=None, *args, **kwargs):
+def classifier(input_vars, network_build_fn, n_target_spatial_dims=0, params_path=None, *args, **kwargs):
     """
     Construct a classifier, given input variables and a network building function
     and an optional path from which to load parameters.
     :param input_vars: a list of input variables
     :param network_build_fn: network builder function of the form `fn(input_var, **kwargs) -> lasagne_layer`
     that constructs a network in the form of a Lasagne layer, given an input variable (a Theano variable)
-    :param n_target_dim: the number of dimensions in the target;
+    :param n_target_spatial_dims: the number of spatial dimensions for the target;
         0 for predict per sample with ivector variable type
-        1 for 1-dimensional prediction e.g. time series, with itensor3 variable type (sample, channel (1), time),
-        2 for 2-dimensional prediction e.g. image, with itensor4 variable type (sample, channel (1), height, width),
+        1 for 1-dimensional prediction e.g. time series, with imatrix variable type (sample, channel (1), time),
+        2 for 2-dimensional prediction e.g. image, with itensor3 variable type (sample, channel (1), height, width),
     :param params_path: [optional] path from which to load network parameters
     :return: a classifier instance
     """
     # Prepare Theano variables for inputs and targets
-    if n_target_dim == 0:
+    if n_target_spatial_dims == 0:
         target_var = T.ivector('y')
-    elif n_target_dim == 1:
+    elif n_target_spatial_dims == 1:
         target_var = T.itensor3('y')
-    elif n_target_dim == 2:
+    elif n_target_spatial_dims == 2:
         target_var = T.itensor4('y')
+    elif n_target_spatial_dims == 3:
+        itensor5 = T.TensorType('int32', (False,)*5, 'itensor5')
+        target_var = itensor5('y')
     else:
-        raise ValueError('Valid values for n_target_dim are 0, 1, or 2, not {}'.format(n_target_dim))
+        raise ValueError('Valid values for n_target_dim are 0, 1, or 2, not {}'.format(n_target_spatial_dims))
 
     # Build the network
     print("Building model and compiling functions...")
@@ -197,44 +203,69 @@ def classifier(input_vars, network_build_fn, n_target_dim=0, params_path=None, *
     return BasicDNN(input_vars, [target_var], network, [objective], params_path=params_path, *args, **kwargs)
 
 
-def vector_regressor(network_build_fn, params_path=None, *args, **kwargs):
+def vector_regressor(network_build_fn, n_target_spatial_dims=0, params_path=None, *args, **kwargs):
     """
     Construct a vector regressor, given a network building function
     and an optional path from which to load parameters.
     :param network_build_fn: network builder function of the form `fn(input_var, **kwargs) -> lasagne_layer`
     that constructs a network in the form of a Lasagne layer, given an input variable (a Theano variable)
+    :param n_target_spatial_dims: the number of spatial dimensions for the target;
+        0 for predict per sample with matrix variable type (sample, channel)
+        1 for 1-dimensional prediction e.g. time series, with itensor3 variable type (sample, channel, time),
+        2 for 2-dimensional prediction e.g. image, with itensor4 variable type (sample, channel, height, width),
     :param params_path: [optional] path from which to load network parameters
     :return: a classifier instance
     """
     input_vars = [T.matrix('input')]
-    return regressor(input_vars, network_build_fn, params_path=params_path)
+    return regressor(input_vars, network_build_fn, n_target_spatial_dims=n_target_spatial_dims,
+                     params_path=params_path)
 
 
-def image_regressor(network_build_fn, params_path=None, *args, **kwargs):
+def image_regressor(network_build_fn, n_target_spatial_dims=0, params_path=None, *args, **kwargs):
     """
     Construct an image regressor, given a network building function
     and an optional path from which to load parameters.
     :param network_build_fn: network builder function of the form `fn(input_var, **kwargs) -> lasagne_layer`
     that constructs a network in the form of a Lasagne layer, given an input variable (a Theano variable)
+    :param n_target_spatial_dims: the number of spatial dimensions for the target;
+        0 for predict per sample with matrix variable type (sample, channel)
+        1 for 1-dimensional prediction e.g. time series, with itensor3 variable type (sample, channel, time),
+        2 for 2-dimensional prediction e.g. image, with itensor4 variable type (sample, channel, height, width),
     :param params_path: [optional] path from which to load network parameters
     :return: a classifier instance
     """
     input_vars = [T.tensor4('input')]
-    return regressor(input_vars, network_build_fn, params_path=params_path)
+    return regressor(input_vars, network_build_fn, n_target_spatial_dims=n_target_spatial_dims,
+                     params_path=params_path)
 
 
-def regressor(input_vars, network_build_fn, params_path=None, *args, **kwargs):
+def regressor(input_vars, network_build_fn, n_target_spatial_dims=0, params_path=None, *args, **kwargs):
     """
     Construct a regressor, given a network building function
     and an optional path from which to load parameters.
     :param input_vars: a list of input variables
     :param network_build_fn: network builder function of the form `fn(input_var, **kwargs) -> lasagne_layer`
     that constructs a network in the form of a Lasagne layer, given an input variable (a Theano variable)
+    :param n_target_spatial_dims: the number of spatial dimensions for the target;
+        0 for predict per sample with matrix variable type (sample, channel)
+        1 for 1-dimensional prediction e.g. time series, with itensor3 variable type (sample, channel, time),
+        2 for 2-dimensional prediction e.g. image, with itensor4 variable type (sample, channel, height, width),
     :param params_path: [optional] path from which to load network parameters
     :return: a classifier instance
     """
     # Prepare Theano variables for inputs and targets
-    target_var = T.matrix('y')
+    if n_target_spatial_dims == 0:
+        target_var = T.matrix('y')
+    elif n_target_spatial_dims == 1:
+        target_var = T.tensor3('y')
+    elif n_target_spatial_dims == 2:
+        target_var = T.tensor4('y')
+    elif n_target_spatial_dims == 3:
+        tensor5 = T.TensorType(theano.config.floatX, (False,)*5, 'itensor5')
+        target_var = tensor5('y')
+    else:
+        raise ValueError('Valid values for n_target_dim are 0, 1, or 2, not {}'.format(n_target_spatial_dims))
+
 
     # Build the network
     print("Building model and compiling functions...")
