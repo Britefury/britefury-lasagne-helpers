@@ -67,24 +67,49 @@ class VGGModel (object):
 
     Override the `build_network` class method to define the network architecture
     """
-    def __init__(self, mean_value, class_names, model_name, param_values):
-        self.network, self.final_layer_name = self.build_network()
+    def __init__(self, mean_value, class_names, model_name, param_values, input_shape=None, last_layer_name=None):
+        # Build the network
+        final_layer = self.build_network(input_shape=input_shape)
+        # Generate dictionary mapping layer name to layer
+        network = self._final_layer_to_network_dict(final_layer)
+
+        # Slice the network if necessary
+        if last_layer_name is not None:
+            try:
+                final_layer = network[last_layer_name]
+            except KeyError:
+                raise KeyError('Could not find last layer: no layer named {}'.format(last_layer_name))
+            network = self._final_layer_to_network_dict(final_layer)
+
+        # Load in parameter values
+        if last_layer_name is None:
+            lasagne.layers.set_all_param_values(final_layer, param_values)
+        else:
+            n_params = len(lasagne.layers.get_all_params(final_layer))
+            lasagne.layers.set_all_param_values(final_layer, param_values[:n_params])
+
+        self.final_layer = final_layer
+        self.network = network
         self.mean_value = mean_value
         self.class_names = class_names
         self.model_name = model_name
-        lasagne.layers.set_all_param_values(self.network[self.final_layer_name], param_values)
 
 
     @classmethod
-    def build_network(cls):
+    def _final_layer_to_network_dict(cls, final_layer):
+        layers = lasagne.layers.get_all_layers(final_layer)
+        for layer in layers:
+            if layer.name is None or layer.name == '':
+                raise ValueError('Layer {} has no name'.format(layer))
+        return {layer.name: layer for layer in layers}
+
+
+
+    @classmethod
+    def build_network(cls, input_shape=None):
         raise NotImplementedError('Abstract for type {}'.format(cls))
 
     
-    @property
-    def final_layer(self):
-        return self.network[self.final_layer_name]
-
-
     def prepare_image(self, im, image_size=224):
         """
         Prepare an image for classification with VGG; scale and crop to `image_size` x `image_size`.
@@ -162,14 +187,14 @@ class VGGModel (object):
 
 
     @classmethod
-    def from_loaded_params(cls, loaded_params):
+    def from_loaded_params(cls, loaded_params, input_shape=None, last_layer_name=None):
         """
         Construct a model given parameters loaded from a pickled VGG model
         :param loaded_params: a dictionary resulting from loading a pickled VGG model
         :return: the model
         """
         return cls(loaded_params['mean value'], loaded_params['synset words'], loaded_params['model name'],
-                   loaded_params['param values'])
+                   loaded_params['param values'], input_shape=input_shape, last_layer_name=last_layer_name)
 
     @staticmethod
     def unpickle_from_path(path):
@@ -185,63 +210,65 @@ class VGGModel (object):
 
 class VGG16Model (VGGModel):
     @classmethod
-    def build_network(cls):
-        net = {}
+    def build_network(cls, input_shape=None):
+        if input_shape is None:
+            # Default input shape: 3 channel images of size 224 x 224.
+            input_shape = (3, 224, 224)
+
         # Input layer: shape is of the form (sample, channel, height, width).
-        # We are using 3 channel images of size 224 x 224.
         # We leave the sample dimension with no size (`None`) so that the
         # minibatch size is whatever we need it to be when we use it
-        net['input'] = InputLayer((None, 3, 224, 224))
+        net = InputLayer((None,) + input_shape, name='input')
 
         # First two convolutional layers: 64 filters, 3x3 convolution, 1 pixel padding
-        net['conv1_1'] = Conv2DLayer(net['input'], 64, 3, pad=1, flip_filters=False)
-        net['conv1_2'] = Conv2DLayer(net['conv1_1'], 64, 3, pad=1, flip_filters=False)
+        net = Conv2DLayer(net, 64, 3, pad=1, flip_filters=False, name='conv1_1')
+        net = Conv2DLayer(net, 64, 3, pad=1, flip_filters=False, name='conv1_2')
         # 2x2 max-pooling; will reduce size from 224x224 to 112x112
-        net['pool1'] = Pool2DLayer(net['conv1_2'], 2)
+        net = Pool2DLayer(net, 2, name='pool1')
 
         # Two convolutional layers, 128 filters
-        net['conv2_1'] = Conv2DLayer(net['pool1'], 128, 3, pad=1, flip_filters=False)
-        net['conv2_2'] = Conv2DLayer(net['conv2_1'], 128, 3, pad=1, flip_filters=False)
+        net = Conv2DLayer(net, 128, 3, pad=1, flip_filters=False, name='conv2_1')
+        net = Conv2DLayer(net, 128, 3, pad=1, flip_filters=False, name='conv2_2')
         # 2x2 max-pooling; will reduce size from 112x112 to 56x56
-        net['pool2'] = Pool2DLayer(net['conv2_2'], 2)
+        net = Pool2DLayer(net, 2, name='pool2')
 
         # Three convolutional layers, 256 filters
-        net['conv3_1'] = Conv2DLayer(net['pool2'], 256, 3, pad=1, flip_filters=False)
-        net['conv3_2'] = Conv2DLayer(net['conv3_1'], 256, 3, pad=1, flip_filters=False)
-        net['conv3_3'] = Conv2DLayer(net['conv3_2'], 256, 3, pad=1, flip_filters=False)
+        net = Conv2DLayer(net, 256, 3, pad=1, flip_filters=False, name='conv3_1')
+        net = Conv2DLayer(net, 256, 3, pad=1, flip_filters=False, name='conv3_2')
+        net = Conv2DLayer(net, 256, 3, pad=1, flip_filters=False, name='conv3_3')
         # 2x2 max-pooling; will reduce size from 56x56 to 28x28
-        net['pool3'] = Pool2DLayer(net['conv3_3'], 2)
+        net = Pool2DLayer(net, 2, name='pool3')
 
         # Three convolutional layers, 512 filters
-        net['conv4_1'] = Conv2DLayer(net['pool3'], 512, 3, pad=1, flip_filters=False)
-        net['conv4_2'] = Conv2DLayer(net['conv4_1'], 512, 3, pad=1, flip_filters=False)
-        net['conv4_3'] = Conv2DLayer(net['conv4_2'], 512, 3, pad=1, flip_filters=False)
+        net = Conv2DLayer(net, 512, 3, pad=1, flip_filters=False, name='conv4_1')
+        net = Conv2DLayer(net, 512, 3, pad=1, flip_filters=False, name='conv4_2')
+        net = Conv2DLayer(net, 512, 3, pad=1, flip_filters=False, name='conv4_3')
         # 2x2 max-pooling; will reduce size from 28x28 to 14x14
-        net['pool4'] = Pool2DLayer(net['conv4_3'], 2)
+        net = Pool2DLayer(net, 2, name='pool4')
 
         # Three convolutional layers, 512 filters
-        net['conv5_1'] = Conv2DLayer(net['pool4'], 512, 3, pad=1, flip_filters=False)
-        net['conv5_2'] = Conv2DLayer(net['conv5_1'], 512, 3, pad=1, flip_filters=False)
-        net['conv5_3'] = Conv2DLayer(net['conv5_2'], 512, 3, pad=1, flip_filters=False)
+        net = Conv2DLayer(net, 512, 3, pad=1, flip_filters=False, name='conv5_1')
+        net = Conv2DLayer(net, 512, 3, pad=1, flip_filters=False, name='conv5_2')
+        net = Conv2DLayer(net, 512, 3, pad=1, flip_filters=False, name='conv5_3')
         # 2x2 max-pooling; will reduce size from 14x14 to 7x7
-        net['pool5'] = Pool2DLayer(net['conv5_3'], 2)
+        net = Pool2DLayer(net, 2, name='pool5')
 
         # Dense layer, 4096 units
-        net['fc6'] = DenseLayer(net['pool5'], num_units=4096)
+        net = DenseLayer(net, num_units=4096, name='fc6')
         # 50% dropout (only applied during training, turned off during prediction)
-        net['fc6_dropout'] = DropoutLayer(net['fc6'], p=0.5)
+        net = DropoutLayer(net, p=0.5, name='fc6_dropout')
 
         # Dense layer, 4096 units
-        net['fc7'] = DenseLayer(net['fc6_dropout'], num_units=4096)
+        net = DenseLayer(net, num_units=4096, name='fc7')
         # 50% dropout (only applied during training, turned off during prediction)
-        net['fc7_dropout'] = DropoutLayer(net['fc7'], p=0.5)
+        net = DropoutLayer(net, p=0.5, name='fc7_dropout')
 
         # Final dense layer, 1000 units: 1 for each class
-        net['fc8'] = DenseLayer(net['fc7_dropout'], num_units=1000, nonlinearity=None)
+        net = DenseLayer(net, num_units=1000, nonlinearity=None, name='fc8')
         # Softmax non-linearity that will generate probabilities
-        net['prob'] = NonlinearityLayer(net['fc8'], softmax)
+        net = NonlinearityLayer(net, softmax, name='prob')
 
-        return net, 'prob'
+        return net
 
     @staticmethod
     def load_params():
@@ -249,72 +276,74 @@ class VGG16Model (VGGModel):
         return VGGModel.unpickle_from_path(_get_vgg16_path())
 
     @classmethod
-    def load(cls):
-        return cls.from_loaded_params(cls.load_params())
+    def load(cls, input_shape=None, last_layer_name=None):
+        return cls.from_loaded_params(cls.load_params(), input_shape=input_shape, last_layer_name=last_layer_name)
 
 
 class VGG19Model (VGGModel):
     @classmethod
-    def build_network(cls):
-        net = {}
+    def build_network(cls, input_shape=None):
+        if input_shape is None:
+            # Default input shape: 3 channel images of size 224 x 224.
+            input_shape = (3, 224, 224)
+
         # Input layer: shape is of the form (sample, channel, height, width).
-        # We are using 3 channel images of size 224 x 224.
         # We leave the sample dimension with no size (`None`) so that the
         # minibatch size is whatever we need it to be when we use it
-        net['input'] = InputLayer((None, 3, 224, 224))
+        net = InputLayer((None,) + input_shape, name='input')
 
         # First two convolutional layers: 64 filters, 3x3 convolution, 1 pixel padding
-        net['conv1_1'] = Conv2DLayer(net['input'], 64, 3, pad=1, flip_filters=False)
-        net['conv1_2'] = Conv2DLayer(net['conv1_1'], 64, 3, pad=1, flip_filters=False)
+        net = Conv2DLayer(net, 64, 3, pad=1, flip_filters=False, name='conv1_1')
+        net = Conv2DLayer(net, 64, 3, pad=1, flip_filters=False, name='conv1_2')
         # 2x2 max-pooling; will reduce size from 224x224 to 112x112
-        net['pool1'] = Pool2DLayer(net['conv1_2'], 2)
+        net = Pool2DLayer(net, 2, name='pool1')
 
         # Two convolutional layers, 128 filters
-        net['conv2_1'] = Conv2DLayer(net['pool1'], 128, 3, pad=1, flip_filters=False)
-        net['conv2_2'] = Conv2DLayer(net['conv2_1'], 128, 3, pad=1, flip_filters=False)
+        net = Conv2DLayer(net, 128, 3, pad=1, flip_filters=False, name='conv2_1')
+        net = Conv2DLayer(net, 128, 3, pad=1, flip_filters=False, name='conv2_2')
         # 2x2 max-pooling; will reduce size from 112x112 to 56x56
-        net['pool2'] = Pool2DLayer(net['conv2_2'], 2)
+        net = Pool2DLayer(net, 2, name='pool2')
 
         # Four convolutional layers, 256 filters
-        net['conv3_1'] = Conv2DLayer(net['pool2'], 256, 3, pad=1, flip_filters=False)
-        net['conv3_2'] = Conv2DLayer(net['conv3_1'], 256, 3, pad=1, flip_filters=False)
-        net['conv3_3'] = Conv2DLayer(net['conv3_2'], 256, 3, pad=1, flip_filters=False)
-        net['conv3_4'] = Conv2DLayer(net['conv3_3'], 256, 3, pad=1, flip_filters=False)
+        net = Conv2DLayer(net, 256, 3, pad=1, flip_filters=False, name='conv3_1')
+        net = Conv2DLayer(net, 256, 3, pad=1, flip_filters=False, name='conv3_2')
+        net = Conv2DLayer(net, 256, 3, pad=1, flip_filters=False, name='conv3_3')
+        net = Conv2DLayer(net, 256, 3, pad=1, flip_filters=False, name='conv3_4')
         # 2x2 max-pooling; will reduce size from 56x56 to 28x28
-        net['pool3'] = Pool2DLayer(net['conv3_4'], 2)
+        net = Pool2DLayer(net, 2, name='pool3')
 
         # Four convolutional layers, 512 filters
-        net['conv4_1'] = Conv2DLayer(net['pool3'], 512, 3, pad=1, flip_filters=False)
-        net['conv4_2'] = Conv2DLayer(net['conv4_1'], 512, 3, pad=1, flip_filters=False)
-        net['conv4_3'] = Conv2DLayer(net['conv4_2'], 512, 3, pad=1, flip_filters=False)
-        net['conv4_4'] = Conv2DLayer(net['conv4_3'], 512, 3, pad=1, flip_filters=False)
+        net = Conv2DLayer(net, 512, 3, pad=1, flip_filters=False, name='conv4_1')
+        net = Conv2DLayer(net, 512, 3, pad=1, flip_filters=False, name='conv4_2')
+        net = Conv2DLayer(net, 512, 3, pad=1, flip_filters=False, name='conv4_3')
+        net = Conv2DLayer(net, 512, 3, pad=1, flip_filters=False, name='conv4_4')
         # 2x2 max-pooling; will reduce size from 28x28 to 14x14
-        net['pool4'] = Pool2DLayer(net['conv4_4'], 2)
+        net = Pool2DLayer(net, 2, name='pool4')
 
         # Four convolutional layers, 512 filters
-        net['conv5_1'] = Conv2DLayer(net['pool4'], 512, 3, pad=1, flip_filters=False)
-        net['conv5_2'] = Conv2DLayer(net['conv5_1'], 512, 3, pad=1, flip_filters=False)
-        net['conv5_3'] = Conv2DLayer(net['conv5_2'], 512, 3, pad=1, flip_filters=False)
-        net['conv5_4'] = Conv2DLayer(net['conv5_3'], 512, 3, pad=1, flip_filters=False)
+        net = Conv2DLayer(net, 512, 3, pad=1, flip_filters=False, name='conv5_1')
+        net = Conv2DLayer(net, 512, 3, pad=1, flip_filters=False, name='conv5_2')
+        net = Conv2DLayer(net, 512, 3, pad=1, flip_filters=False, name='conv5_3')
+        net = Conv2DLayer(net, 512, 3, pad=1, flip_filters=False, name='conv5_4')
         # 2x2 max-pooling; will reduce size from 14x14 to 7x7
-        net['pool5'] = Pool2DLayer(net['conv5_4'], 2)
+        net = Pool2DLayer(net, 2, name='pool5')
 
         # Dense layer, 4096 units
-        net['fc6'] = DenseLayer(net['pool5'], num_units=4096)
+        net = DenseLayer(net, num_units=4096, name='fc6')
         # 50% dropout (only applied during training, turned off during prediction)
-        net['fc6_dropout'] = DropoutLayer(net['fc6'], p=0.5)
+        net = DropoutLayer(net, p=0.5, name='fc6_dropout')
 
         # Dense layer, 4096 units
-        net['fc7'] = DenseLayer(net['fc6_dropout'], num_units=4096)
+        net = DenseLayer(net, num_units=4096, name='fc7')
         # 50% dropout (only applied during training, turned off during prediction)
-        net['fc7_dropout'] = DropoutLayer(net['fc7'], p=0.5)
+        net = DropoutLayer(net, p=0.5, name='fc7_dropout')
 
         # Final dense layer, 1000 units: 1 for each class
-        net['fc8'] = DenseLayer(net['fc7_dropout'], num_units=1000, nonlinearity=None)
+        net = DenseLayer(net, num_units=1000, nonlinearity=None, name='fc8')
         # Softmax non-linearity that will generate probabilities
-        net['prob'] = NonlinearityLayer(net['fc8'], softmax)
+        net = NonlinearityLayer(net, softmax, name='prob')
 
-        return net, 'prob'
+        return net
 
     @staticmethod
     def load_params():
@@ -322,5 +351,5 @@ class VGG19Model (VGGModel):
         return VGGModel.unpickle_from_path(_get_vgg19_path())
 
     @classmethod
-    def load(cls):
-        return cls.from_loaded_params(cls.load_params())
+    def load(cls, input_shape=None, last_layer_name=None):
+        return cls.from_loaded_params(cls.load_params(), input_shape=input_shape, last_layer_name=last_layer_name)
