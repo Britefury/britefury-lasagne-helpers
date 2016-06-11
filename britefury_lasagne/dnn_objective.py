@@ -41,39 +41,57 @@ def _flatten_spatial_lasagne_layer(layer):
 
 def _flatten_spatial_theano(x, n_channels):
     ndim = x.ndim
-    if ndim > 2:
-        spatial = tuple(range(2, ndim))
-        # (Sample,Channel,Spatial...) -> (Sample,Spatial...,Channel)
-        x = x.dimshuffle((0,) + spatial + (1,))
-        # (Sample,Spatial...,Channel) -> (Sample:Spatial...,Channel)
-        x = x.reshape((-1, n_channels))
+    if n_channels is None:
+        if ndim > 1:
+            # (Sample,Spatial...) -> (Sample:Spatial...)
+            x = x.reshape((-1,))
+    else:
+        if ndim > 2:
+            spatial = tuple(range(2, ndim))
+            # (Sample,Channel,Spatial...) -> (Sample,Spatial...,Channel)
+            x = x.dimshuffle((0,) + spatial + (1,))
+            # (Sample,Spatial...,Channel) -> (Sample:Spatial...,Channel)
+            x = x.reshape((-1, n_channels))
     return x
 
 def _unflatten_spatial_theano(x, spatial_shape, n_channels):
     n_spatial = len(spatial_shape)
     if n_spatial > 0:
-        # (Sample:spatial...,Channel) -> (Sample,Spatial...,Channel)
-        x = x.reshape((-1,) + spatial_shape + (n_channels,))
-        # (Sample,Spatial...,Channel) -> (Sample,Channel,Spatial...)
-        x = x.dimshuffle((0, n_spatial+1,) + tuple(range(1,n_spatial+1)))
+        if n_channels is None:
+            # (Sample:spatial...) -> (Sample,Spatial...)
+            x = x.reshape((-1,) + spatial_shape)
+        else:
+            # (Sample:spatial...,Channel) -> (Sample,Spatial...,Channel)
+            x = x.reshape((-1,) + spatial_shape + (n_channels,))
+            # (Sample,Spatial...,Channel) -> (Sample,Channel,Spatial...)
+            x = x.dimshuffle((0, n_spatial+1,) + tuple(range(1,n_spatial+1)))
     return x
 
 def _flatten_spatial(x, n_channels):
     ndim = len(x.shape)
-    if ndim > 2:
-        # (Sample,Channel,Spatial...) -> (Sample,Spatial...,Channel)
-        x = np.rollaxis(x, 1, ndim)
-        # (Sample,Spatial...,Channel) -> (Sample:Spatial...,Channel)
-        x = x.reshape((-1, n_channels))
+    if n_channels is None:
+        if ndim > 1:
+            # (Sample,Spatial...) -> (Sample:Spatial...)
+            x = x.reshape((-1,))
+    else:
+        if ndim > 2:
+            # (Sample,Channel,Spatial...) -> (Sample,Spatial...,Channel)
+            x = np.rollaxis(x, 1, ndim)
+            # (Sample,Spatial...,Channel) -> (Sample:Spatial...,Channel)
+            x = x.reshape((-1, n_channels))
     return x
 
 def _unflatten_spatial(x, spatial_shape, n_channels):
     n_spatial = len(spatial_shape)
     if n_spatial > 0:
-        # (Sample:spatial...,Channel) -> (Sample,Spatial...,Channel)
-        x = x.reshape((-1,) + spatial_shape + (n_channels,))
-        # (Sample,Spatial...,Channel) -> (Sample,Channel,Spatial...)
-        x = np.rollaxis(x, 3, 1)
+        if n_channels is None:
+            # (Sample:spatial...) -> (Sample,Spatial...)
+            x = x.reshape((-1,) + spatial_shape)
+        else:
+            # (Sample:spatial...,Channel) -> (Sample,Spatial...,Channel)
+            x = x.reshape((-1,) + spatial_shape + (n_channels,))
+            # (Sample,Spatial...,Channel) -> (Sample,Channel,Spatial...)
+            x = np.rollaxis(x, 3, 1)
     return x
 
 
@@ -109,15 +127,13 @@ class ClassifierObjective (AbstractObjective):
 
 
     def build(self):
-        flat_target = _flatten_spatial_theano(self.target_expr, 1)
-        if flat_target.ndim == 2:
-            flat_target = flat_target[:,0]
-        elif flat_target.ndim != 1:
-            raise ValueError('target must have 1 or 2 dimensions, not {}'.format(flat_target.ndim))
+        flat_target = _flatten_spatial_theano(self.target_expr, None)
+        if flat_target.ndim != 1:
+            raise ValueError('target must have 1 dimensions, not {}'.format(flat_target.ndim))
 
         # Flatten the objective layer (if the objective layer generates an
         # output with 2 dimensions then this is a no-op)
-        obj_flat_layer, spatial_shape, n_channels = \
+        obj_flat_layer, spatial_shape, n_out_channels = \
             _flatten_spatial_lasagne_layer(self.objective_layer)
 
         # Predicted probability layer
@@ -141,7 +157,7 @@ class ClassifierObjective (AbstractObjective):
                                      dtype=theano.config.floatX)
 
         # Unflatten prediction
-        pred_prob = _unflatten_spatial_theano(eval_pred_prob, spatial_shape, n_channels)
+        pred_prob = _unflatten_spatial_theano(eval_pred_prob, spatial_shape, n_out_channels)
 
         def train_results_str_fn(train_res):
             return '{} loss={:.6f}'.format(self.name, train_res[0])
