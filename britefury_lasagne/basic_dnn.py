@@ -6,8 +6,8 @@ from . import trainer, dnn_objective
 
 
 class BasicDNN (object):
-    def __init__(self, input_vars, target_vars, final_layers, objectives, updates_fn=None,
-                 params_path=None):
+    def __init__(self, input_vars, target_vars, final_layers, objectives, trainable_params=None,
+                 updates_fn=None, params_path=None):
         """
         Constructor - construct a `SampleDNN` instance given variables for
         input, target and a final layer (a Lasagne layer)
@@ -15,6 +15,8 @@ class BasicDNN (object):
         :param final_layers: a list of Lasagne layers that when followed backward will cover
                 result in all layers being visited
         :param objectives: a list of objectives to optimise
+        :param trainable_params: [optional] a list of parameters to train. If None, then the trainable parameters
+                of all layers will be used
         :param updates_fn: [optional] a function of the form `fn(cost, params) -> updates` that
             generates update expressions given the cost and the parameters to update using
             an optimisation technique e.g. Nesterov Momentum:
@@ -49,12 +51,13 @@ class BasicDNN (object):
         # Create update expressions for training, i.e., how to modify the
         # parameters at each training step. Here, we'll use Stochastic Gradient
         # Descent (SGD) with Nesterov momentum, but Lasagne offers plenty more.
-        params = lasagne.layers.get_all_params(final_layers, trainable=True)
+        if trainable_params is None:
+            trainable_params = lasagne.layers.get_all_params(final_layers, trainable=True)
         if updates_fn is None:
             updates = lasagne.updates.nesterov_momentum(
-                    train_cost, params, learning_rate=0.01, momentum=0.9)
+                    train_cost, trainable_params, learning_rate=0.01, momentum=0.9)
         else:
-            updates = updates_fn(train_cost, params)
+            updates = updates_fn(train_cost, trainable_params)
 
         # Compile a function performing a training step on a mini-batch (by giving
         # the updates dictionary) and returning the corresponding training loss:
@@ -203,7 +206,8 @@ def classifier(input_vars, network_build_fn, n_target_spatial_dims=0, params_pat
     print("Building model and compiling functions...")
     network = network_build_fn(input_vars=input_vars)
 
-    objective = dnn_objective.ClassifierObjective('y', network, target_var)
+    objective = dnn_objective.ClassifierObjective('y', network, target_var,
+                                                  n_target_spatial_dims=n_target_spatial_dims)
 
     return BasicDNN(input_vars, [target_var], network, [objective], params_path=params_path, *args, **kwargs)
 
@@ -278,6 +282,7 @@ def regressor(input_vars, network_build_fn, n_target_spatial_dims=0, params_path
     print("Building model and compiling functions...")
     network = network_build_fn(input_vars=input_vars)
 
-    objective = dnn_objective.RegressorObjective('y', network, target_var)
+    objective = dnn_objective.RegressorObjective('y', network, target_var,
+                                                 n_target_spatial_dims=n_target_spatial_dims)
 
     return BasicDNN(input_vars, [target_var], network, [objective], params_path=params_path, *args, **kwargs)

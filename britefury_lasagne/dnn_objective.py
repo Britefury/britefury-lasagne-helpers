@@ -120,10 +120,11 @@ class AbstractObjective (object):
 
 
 class ClassifierObjective (AbstractObjective):
-    def __init__(self, name, objective_layer, target_expr, cost_weight=1.0):
+    def __init__(self, name, objective_layer, target_expr, n_target_spatial_dims, cost_weight=1.0):
         super(ClassifierObjective, self).__init__(name, cost_weight)
         self.objective_layer = objective_layer
         self.target_expr = target_expr
+        self.n_target_spatial_dims = n_target_spatial_dims
 
 
     def build(self):
@@ -136,6 +137,9 @@ class ClassifierObjective (AbstractObjective):
         obj_flat_layer, spatial_shape, n_out_channels = \
             _flatten_spatial_lasagne_layer(self.objective_layer)
 
+        n_spatial = np.prod(spatial_shape)
+        inv_n_spatial = lasagne.utils.floatX(1.0 / float(n_spatial))
+
         # Predicted probability layer
         softmax = TemperatureSoftmax()
         prob_layer = lasagne.layers.NonlinearityLayer(obj_flat_layer, softmax)
@@ -143,18 +147,26 @@ class ClassifierObjective (AbstractObjective):
         # Get an expression representing the predicted probability
         train_pred_prob = lasagne.layers.get_output(prob_layer)
 
-        # Create a per-sample loss expression for training, i.e., a scalar objective we want
+        # Create a loss expression for training, i.e., a scalar objective we want
         # to minimize (for our multi-class problem, it is the cross-entropy loss):
-        train_loss_per_sample = lasagne.objectives.categorical_crossentropy(train_pred_prob, flat_target)
+        train_loss = lasagne.objectives.categorical_crossentropy(train_pred_prob, flat_target)
 
         # Create prediction expressions; use deterministic forward pass (disable
         # dropout layers)
         eval_pred_prob = lasagne.layers.get_output(prob_layer, deterministic=True)
         # Create evaluation loss expression
-        eval_loss_per_sample = lasagne.objectives.categorical_crossentropy(eval_pred_prob, flat_target)
+        eval_loss = lasagne.objectives.categorical_crossentropy(eval_pred_prob, flat_target)
         # Create an expression for error count
-        eval_err_count = T.sum(T.neq(T.argmax(eval_pred_prob, axis=1), flat_target),
-                                     dtype=theano.config.floatX)
+        eval_err = T.neq(T.argmax(eval_pred_prob, axis=1), flat_target)
+
+        if self.n_target_spatial_dims == 0:
+            train_loss_batch = train_loss.sum()
+            eval_loss_batch = eval_loss.sum()
+            eval_err_rate = eval_err.sum(dtype=theano.config.floatX)
+        else:
+            train_loss_batch = train_loss.sum() * inv_n_spatial
+            eval_loss_batch = eval_loss.sum() * inv_n_spatial
+            eval_err_rate = eval_err.sum() * inv_n_spatial
 
         # Unflatten prediction
         pred_prob = _unflatten_spatial_theano(eval_pred_prob, spatial_shape, n_out_channels)
@@ -165,36 +177,42 @@ class ClassifierObjective (AbstractObjective):
         def eval_results_str_fn(eval_res):
             return '{} loss={:.6f} err={:.2%}'.format(self.name, eval_res[0], eval_res[1])
 
-        return ObjectiveOutput(train_cost=train_loss_per_sample.mean() * self.cost_weight,
-                               train_results=[train_loss_per_sample.sum()],
+        return ObjectiveOutput(train_cost=train_loss.mean() * self.cost_weight,
+                               train_results=[train_loss_batch],
                                train_results_str_fn=train_results_str_fn,
-                               eval_results=[eval_loss_per_sample.sum(), eval_err_count],
+                               eval_results=[eval_loss_batch, eval_err_rate],
                                eval_results_str_fn=eval_results_str_fn,
                                prediction=pred_prob)
 
 
 class RegressorObjective (AbstractObjective):
-    def __init__(self, name, objective_layer, target_expr, cost_weight=1.0):
+    def __init__(self, name, objective_layer, target_expr, n_target_spatial_dims, cost_weight=1.0):
         super(RegressorObjective, self).__init__(name, cost_weight)
         self.objective_layer = objective_layer
         self.target_expr = target_expr
+        self.n_target_spatial_dims = n_target_spatial_dims
 
 
     def build(self):
-        softmax = TemperatureSoftmax()
-
         # Get an expression representing the predicted probability
         train_pred = lasagne.layers.get_output(self.objective_layer)
 
-        # Create a per-sample loss expression for training, i.e., a scalar objective we want
+        # Create a loss expression for training, i.e., a scalar objective we want
         # to minimize; squared error
-        train_loss_per_sample = lasagne.objectives.squared_error(train_pred, self.target_expr)
+        train_loss = lasagne.objectives.squared_error(train_pred, self.target_expr)
 
         # Create prediction expressions; use deterministic forward pass (disable
         # dropout layers)
         eval_pred = lasagne.layers.get_output(self.objective_layer, deterministic=True)
         # Create evaluation loss expression
-        eval_loss_per_sample = lasagne.objectives.squared_error(eval_pred, self.target_expr)
+        eval_loss = lasagne.objectives.squared_error(eval_pred, self.target_expr)
+
+        if self.n_target_spatial_dims == 0:
+            train_loss_batch = train_loss.sum()
+            eval_loss_batch = eval_loss.sum()
+        else:
+            train_loss_batch = train_loss.mean(axis=tuple(range(2,2+self.n_target_spatial_dims))).sum()
+            eval_loss_batch = eval_loss.mean(axis=tuple(range(2,2+self.n_target_spatial_dims))).sum()
 
         def train_results_str_fn(train_res):
             return '{} loss={:.6f}'.format(self.name, train_res[0])
@@ -202,9 +220,9 @@ class RegressorObjective (AbstractObjective):
         def eval_results_str_fn(eval_res):
             return '{} loss={:.6f}'.format(self.name, eval_res[0])
 
-        return ObjectiveOutput(train_cost=train_loss_per_sample.mean() * self.cost_weight,
-                               train_results=[train_loss_per_sample.sum()],
+        return ObjectiveOutput(train_cost=train_loss.mean() * self.cost_weight,
+                               train_results=[train_loss_batch],
                                train_results_str_fn=train_results_str_fn,
-                               eval_results=[eval_loss_per_sample.sum()],
+                               eval_results=[eval_loss_batch],
                                eval_results_str_fn=eval_results_str_fn,
                                prediction=eval_pred)
