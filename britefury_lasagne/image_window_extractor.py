@@ -22,9 +22,12 @@ class ImageWindowExtractor (object):
         if tiling.ndim != 2:
             raise ValueError('tiling should have 2 dimensions, not {}'.format(tiling.ndim))
 
+        self.tiling_scheme = tiling
+
         if isinstance(tiling, tiling_scheme.TilingScheme):
             tiling = tiling.apply(self.input_img_shape)
 
+        self.downsample = downsample
         if downsample is not None:
             if len(downsample) != 2:
                 raise ValueError('dimensionality of downsample ({}) != 2'.format(len(downsample)))
@@ -68,6 +71,14 @@ class ImageWindowExtractor (object):
         self.img_windows = ds_tiling.tiles
 
         self.N = self.N_images * self.img_windows[0] * self.img_windows[1]
+
+
+    def assembler(self, image_n_channels=None, n_images=None, upsample_order=0, pad_mode='reflect'):
+        image_n_channels = image_n_channels or self.n_channels
+        n_images = n_images or self.N_images
+        return ImageWindowAssembler(image_shape=self.input_img_shape, image_n_channels=image_n_channels,
+                                    n_images=n_images, tiling=self.tiling_scheme, upsample=self.downsample,
+                                    upsample_order=upsample_order, pad_mode=pad_mode, img_dtype=self.dtype)
 
 
     def window_indices_to_coords(self, indices):
@@ -117,7 +128,7 @@ class ImageWindowExtractor (object):
 
 
 class ImageWindowAssembler (object):
-    def __init__(self, image_shape, image_n_channels, N_images, tiling, upsample=None, upsample_order=0,
+    def __init__(self, image_shape, image_n_channels, n_images, tiling, upsample=None, upsample_order=0,
                  pad_mode='reflect', img_dtype=np.float32):
         """
 
@@ -126,7 +137,7 @@ class ImageWindowAssembler (object):
         :param tiling: a `tiling_scheme.TilingScheme` instance that describes how windows are to be extracted
         `from the data
         """
-        self.N_images = N_images
+        self.N_images = n_images
         self.output_img_shape = image_shape
 
         if tiling.ndim != 2:
@@ -322,7 +333,7 @@ class Test_ImageWindowExtractor (unittest.TestCase):
                          np.append(img1b[None,:,30:46,26:42], img2b[None,:,5:21, 64:80], axis=0)).all())
 
         # Reassemble
-        assembler = ImageWindowAssembler(image_shape=(100,100), image_n_channels=3, N_images=4, tiling=tiling,
+        assembler = ImageWindowAssembler(image_shape=(100,100), image_n_channels=3, n_images=4, tiling=tiling,
                                          img_dtype=img0.dtype)
         all_win_indices = np.arange(wins.N)
         assembler.set_windows(all_win_indices, wins.get_windows(all_win_indices))
@@ -380,7 +391,7 @@ class Test_ImageWindowExtractor (unittest.TestCase):
 
 
         # Reassemble
-        assembler = ImageWindowAssembler(image_shape=(100,100), image_n_channels=3, N_images=4, tiling=tiling,
+        assembler = ImageWindowAssembler(image_shape=(100,100), image_n_channels=3, n_images=4, tiling=tiling,
                                          upsample=(2,4), img_dtype=img0.dtype)
         all_win_indices = np.arange(wins.N)
         assembler.set_windows(all_win_indices, wins.get_windows(all_win_indices))
