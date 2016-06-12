@@ -3,6 +3,7 @@ import theano
 import theano.tensor as T
 
 import lasagne
+from lasagne.utils import floatX
 
 
 class TemperatureSoftmax (object):
@@ -117,14 +118,24 @@ class AbstractObjective (object):
     def build(self):
         raise NotImplementedError('Abstract for {}'.format(type(self)))
 
+    def score_improved(self, new_results, best_so_far_results):
+        raise NotImplementedError('Abstract for {}'.format(type(self)))
+
 
 
 class ClassifierObjective (AbstractObjective):
-    def __init__(self, name, objective_layer, target_expr, n_target_spatial_dims, cost_weight=1.0):
+    SCORE_ERROR = 'err'
+    SCORE_JACCARD = 'jaccard'
+    SCORE_PRECISION = 'precision'
+    SCORE_RECALL = 'recall'
+    SCORE_F1 = 'f1'
+
+    def __init__(self, name, objective_layer, target_expr, n_target_spatial_dims, score=SCORE_ERROR, cost_weight=1.0):
         super(ClassifierObjective, self).__init__(name, cost_weight)
         self.objective_layer = objective_layer
         self.target_expr = target_expr
         self.n_target_spatial_dims = n_target_spatial_dims
+        self.score = score
 
 
     def build(self):
@@ -134,7 +145,7 @@ class ClassifierObjective (AbstractObjective):
 
         # Flatten the objective layer (if the objective layer generates an
         # output with 2 dimensions then this is a no-op)
-        obj_flat_layer, spatial_shape, n_out_channels = \
+        obj_flat_layer, spatial_shape, n_classes = \
             _flatten_spatial_lasagne_layer(self.objective_layer)
 
         n_spatial = np.prod(spatial_shape)
@@ -156,33 +167,75 @@ class ClassifierObjective (AbstractObjective):
         eval_pred_prob = lasagne.layers.get_output(prob_layer, deterministic=True)
         # Create evaluation loss expression
         eval_loss = lasagne.objectives.categorical_crossentropy(eval_pred_prob, flat_target)
-        # Create an expression for error count
-        eval_err = T.neq(T.argmax(eval_pred_prob, axis=1), flat_target)
+        # Predicted class
+        eval_pred_cls = T.argmax(eval_pred_prob, axis=1)
+
+        if self.score == self.SCORE_ERROR:
+            # Create an expression for error count
+            eval_score = T.neq(eval_pred_cls, flat_target).astype(theano.config.floatX)
+        elif self.score in {self.SCORE_JACCARD, self.SCORE_PRECISION, self.SCORE_RECALL, self.SCORE_F1}:
+            scores = []
+            for cls_i in range(n_classes):
+                truth = T.eq(flat_target, cls_i)
+                pred = T.eq(eval_pred_cls, cls_i)
+                true_pos = truth & pred
+                if self.score == self.SCORE_JACCARD:
+                    jaccard_cls = true_pos.sum(dtype=theano.config.floatX) / \
+                                  T.maximum((pred | truth).sum(dtype=theano.config.floatX), floatX(1.0))
+                    scores.append(jaccard_cls)
+                elif self.score == self.SCORE_PRECISION:
+                    precision_cls = true_pos.sum(dtype=theano.config.floatX) / \
+                                    T.maximum(pred.sum(dtype=theano.config.floatX), floatX(1.0))
+                    scores.append(precision_cls)
+                elif self.score == self.SCORE_RECALL:
+                    recall_cls = true_pos.sum(dtype=theano.config.floatX) / \
+                                    T.maximum(truth.sum(dtype=theano.config.floatX), floatX(1.0))
+                    scores.append(recall_cls)
+                elif self.score == self.SCORE_F1:
+                    precision_cls = true_pos.sum(dtype=theano.config.floatX) / \
+                                    T.maximum(pred.sum(dtype=theano.config.floatX), floatX(1.0))
+                    recall_cls = true_pos.sum(dtype=theano.config.floatX) / \
+                                    T.maximum(truth.sum(dtype=theano.config.floatX), floatX(1.0))
+                    score_cls = floatX(2.0) * (precision_cls * recall_cls) / \
+                                T.maximum(precision_cls + recall_cls, floatX(1.0))
+                    scores.append(score_cls)
+            # Multiply by n_samples, as `Trainer` divides by it when aggregating the score
+            n_samples = flat_target.shape[0]
+            eval_score = sum(scores) * n_samples / floatX(n_classes)
+        else:
+            raise ValueError('score is not valid ({})'.format(self.score))
 
         if self.n_target_spatial_dims == 0:
             train_loss_batch = train_loss.sum()
             eval_loss_batch = eval_loss.sum()
-            eval_err_rate = eval_err.sum(dtype=theano.config.floatX)
+            eval_score_batch = eval_score.sum()
         else:
             train_loss_batch = train_loss.sum() * inv_n_spatial
             eval_loss_batch = eval_loss.sum() * inv_n_spatial
-            eval_err_rate = eval_err.sum() * inv_n_spatial
+            eval_score_batch = eval_score.sum() * inv_n_spatial
 
         # Unflatten prediction
-        pred_prob = _unflatten_spatial_theano(eval_pred_prob, spatial_shape, n_out_channels)
+        pred_prob = _unflatten_spatial_theano(eval_pred_prob, spatial_shape, n_classes)
 
         def train_results_str_fn(train_res):
             return '{} loss={:.6f}'.format(self.name, train_res[0])
 
         def eval_results_str_fn(eval_res):
-            return '{} loss={:.6f} err={:.2%}'.format(self.name, eval_res[0], eval_res[1])
+            return '{} loss={:.6f} {}={:.2%}'.format(self.name, eval_res[0], self.score, eval_res[1])
 
         return ObjectiveOutput(train_cost=train_loss.mean() * self.cost_weight,
                                train_results=[train_loss_batch],
                                train_results_str_fn=train_results_str_fn,
-                               eval_results=[eval_loss_batch, eval_err_rate],
+                               eval_results=[eval_loss_batch, eval_score_batch],
                                eval_results_str_fn=eval_results_str_fn,
                                prediction=pred_prob)
+
+    def score_improved(self, new_results, best_so_far_results):
+        if self.score == self.SCORE_ERROR:
+            return new_results[1] < best_so_far_results[1]
+        else:
+            return new_results[1] > best_so_far_results[1]
+
 
 
 class RegressorObjective (AbstractObjective):
@@ -226,3 +279,6 @@ class RegressorObjective (AbstractObjective):
                                eval_results=[eval_loss_batch],
                                eval_results_str_fn=eval_results_str_fn,
                                prediction=eval_pred)
+
+    def score_improved(self, new_results, best_so_far_results):
+        return new_results[0] < best_so_far_results[0]

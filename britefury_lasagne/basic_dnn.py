@@ -6,8 +6,9 @@ from . import trainer, dnn_objective
 
 
 class BasicDNN (object):
-    def __init__(self, input_vars, target_vars, final_layers, objectives, trainable_params=None,
-                 updates_fn=None, params_path=None):
+    def __init__(self, input_vars, target_vars, final_layers, objectives,
+                 score_objective=None,
+                 trainable_params=None, updates_fn=None, params_path=None):
         """
         Constructor - construct a `SampleDNN` instance given variables for
         input, target and a final layer (a Lasagne layer)
@@ -29,6 +30,14 @@ class BasicDNN (object):
         self.final_layers = final_layers
         self.objectives = objectives
 
+        if score_objective is None:
+            score_objective = objectives[0]
+        else:
+            if score_objective not in objectives:
+                raise ValueError('score_objective not in objectives')
+
+        self.score_objective = score_objective
+
         if params_path is not None:
             trainer.load_model(params_path, final_layers)
 
@@ -38,6 +47,7 @@ class BasicDNN (object):
         self.train_results_indices = []
         eval_results = []
         self.eval_results_indices = []
+        self.score_objective_index = self.objectives.index(score_objective)
         predictions = []
         for obj_res in self.objective_results:
             self.train_results_indices.append(len(train_results))
@@ -77,7 +87,7 @@ class BasicDNN (object):
                                 train_epoch_results_check_fn=self._check_train_epoch_results)
         # Evaluate with evaluation function, the second output value - error rate - is used for scoring
         self.trainer.evaluate_with(eval_batch_fn=self._val_fn, eval_log_fn=self._eval_log,
-                                   validation_improved_fn=1)
+                                   validation_improved_fn=self._score_improved)
         # Set the epoch logging function
         self.trainer.report(epoch_log_fn=self._epoch_log)
         # Tell the trainer to store parameters when the validation score (error rate) is best
@@ -105,6 +115,12 @@ class BasicDNN (object):
                                  self.eval_results_indices[1:]):
             eval_items.append(obj_res.eval_results_str_fn(eval_results[i:j]))
         return ', '.join(eval_items)
+
+    def _score_improved(self, new_results, best_so_far):
+        i, j = self.eval_results_indices[self.score_objective_index:self.score_objective_index+2]
+        new_obj_res = new_results[i:j]
+        best_obj_res = best_so_far[i:j]
+        return self.score_objective.score_improved(new_obj_res, best_obj_res)
 
     def _epoch_log(self, epoch_number, delta_time, train_str, val_str, test_str):
         """
@@ -138,8 +154,8 @@ class BasicDNN (object):
         return [np.concatenate(chn, axis=0) for chn in zip(*y)]
 
 
-def simple_classifier(network_build_fn, n_input_spatial_dims=0, n_target_spatial_dims=0, params_path=None,
-                      *args, **kwargs):
+def simple_classifier(network_build_fn, n_input_spatial_dims=0, n_target_spatial_dims=0,
+                      score=dnn_objective.ClassifierObjective.SCORE_ERROR, params_path=None, *args, **kwargs):
     """
     Construct an image classifier, given a network building function
     and an optional path from which to load parameters.
@@ -155,6 +171,7 @@ def simple_classifier(network_build_fn, n_input_spatial_dims=0, n_target_spatial
         1 for 1-dimensional prediction e.g. time series, with imatrix variable type (sample, time),
         2 for 2-dimensional prediction e.g. image, with itensor3 variable type (sample, height, width),
         3 for 3-dimensional prediction e.g. volumn, with itensor4 variable type (sample, depth, height, width),
+    :param score: the scoring metric used to evaluate classifier performance (see `dnn_objective.ClassifierObjective`)
     :param params_path: [optional] path from which to load network parameters
     :return: a classifier instance
     """
@@ -171,10 +188,12 @@ def simple_classifier(network_build_fn, n_input_spatial_dims=0, n_target_spatial
         raise ValueError('Valid values for n_input_spatial_dims are in the range 0-3, not {}'.format(
             n_target_spatial_dims))
     return classifier(input_vars, network_build_fn, n_target_spatial_dims=n_target_spatial_dims,
-                      params_path=params_path)
+                      score=score, params_path=params_path, *args, **kwargs)
 
 
-def classifier(input_vars, network_build_fn, n_target_spatial_dims=0, params_path=None, *args, **kwargs):
+def classifier(input_vars, network_build_fn, n_target_spatial_dims=0,
+               score=dnn_objective.ClassifierObjective.SCORE_ERROR,
+               params_path=None, *args, **kwargs):
     """
     Construct a classifier, given input variables and a network building function
     and an optional path from which to load parameters.
@@ -186,6 +205,7 @@ def classifier(input_vars, network_build_fn, n_target_spatial_dims=0, params_pat
         1 for 1-dimensional prediction e.g. time series, with imatrix variable type (sample, time),
         2 for 2-dimensional prediction e.g. image, with itensor3 variable type (sample, height, width),
         3 for 3-dimensional prediction e.g. volumn, with itensor4 variable type (sample, depth, height, width),
+    :param score: the scoring metric used to evaluate classifier performance (see `dnn_objective.ClassifierObjective`)
     :param params_path: [optional] path from which to load network parameters
     :return: a classifier instance
     """
@@ -207,13 +227,13 @@ def classifier(input_vars, network_build_fn, n_target_spatial_dims=0, params_pat
     network = network_build_fn(input_vars=input_vars)
 
     objective = dnn_objective.ClassifierObjective('y', network, target_var,
-                                                  n_target_spatial_dims=n_target_spatial_dims)
+                                                  n_target_spatial_dims=n_target_spatial_dims, score=score)
 
     return BasicDNN(input_vars, [target_var], network, [objective], params_path=params_path, *args, **kwargs)
 
 
-def simple_regressor(network_build_fn, n_input_spatial_dims=0, n_target_spatial_dims=0, params_path=None,
-                     *args, **kwargs):
+def simple_regressor(network_build_fn, n_input_spatial_dims=0, n_target_spatial_dims=0,
+                     params_path=None, *args, **kwargs):
     """
     Construct a vector regressor, given a network building function
     and an optional path from which to load parameters.
@@ -245,7 +265,7 @@ def simple_regressor(network_build_fn, n_input_spatial_dims=0, n_target_spatial_
         raise ValueError('Valid values for n_input_spatial_dims are in the range 0-3, not {}'.format(
             n_target_spatial_dims))
     return regressor(input_vars, network_build_fn, n_target_spatial_dims=n_target_spatial_dims,
-                     params_path=params_path)
+                     params_path=params_path, *args, **kwargs)
 
 
 def regressor(input_vars, network_build_fn, n_target_spatial_dims=0, params_path=None, *args, **kwargs):
