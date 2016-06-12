@@ -30,10 +30,7 @@ PARAMS_DIR = 'pretrained_models'
 
 if not os.path.exists(PARAMS_DIR):
     _local_dir = os.path.split(__file__)[0]
-    _local_params_dir = os.path.normpath(os.path.join(_local_dir, '..', 'pretrained_models'))
-    if os.path.exists(_local_params_dir):
-        PARAMS_DIR = _local_params_dir
-    del _local_params_dir
+    PARAMS_DIR = os.path.normpath(os.path.join(_local_dir, '..', 'pretrained_models'))
     del _local_dir
 
 

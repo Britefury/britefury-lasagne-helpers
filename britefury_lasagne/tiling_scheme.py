@@ -121,6 +121,32 @@ class DataTilingScheme (object):
         return padding if non_zero else None
 
     @property
+    def inv_padding_as_slices(self):
+        padding = []
+        non_zero = False
+        for pc in self.data_pad_or_crop:
+            c = slice(None)
+            if pc is not None:
+                start = pc[0] if pc[0] > 0 else None
+                stop = -pc[1] if pc[1] > 0 else None
+                c = slice(start, stop)
+            padding.append(c)
+            non_zero = non_zero or c != slice(None)
+        return padding if non_zero else None
+
+    @property
+    def cropping(self):
+        cropping = []
+        non_zero = False
+        for pc in self.data_pad_or_crop:
+            c = 0,0
+            if pc is not None:
+                c = max(-pc[0], 0), max(-pc[1], 0)
+            cropping.append(c)
+            non_zero = non_zero or c != (0,0)
+        return cropping if non_zero else None
+
+    @property
     def cropping_as_slices(self):
         cropping = []
         non_zero = False
