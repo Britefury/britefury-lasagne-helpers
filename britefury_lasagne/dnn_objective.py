@@ -170,49 +170,37 @@ class ClassifierObjective (AbstractObjective):
         # Predicted class
         eval_pred_cls = T.argmax(eval_pred_prob, axis=1)
 
+        eval_scores = []
+
         if self.score == self.SCORE_ERROR:
             # Create an expression for error count
-            eval_score = T.neq(eval_pred_cls, flat_target).astype(theano.config.floatX)
+            errors = T.neq(eval_pred_cls, flat_target).astype(theano.config.floatX)
+
+            if self.n_target_spatial_dims == 0:
+                eval_scores = [errors.sum()]
+            else:
+                eval_scores = [errors.sum() * inv_n_spatial]
         elif self.score in {self.SCORE_JACCARD, self.SCORE_PRECISION, self.SCORE_RECALL, self.SCORE_F1}:
-            scores = []
             for cls_i in range(n_classes):
-                truth = T.eq(flat_target, cls_i)
-                pred = T.eq(eval_pred_cls, cls_i)
-                true_pos = truth & pred
-                if self.score == self.SCORE_JACCARD:
-                    jaccard_cls = true_pos.sum(dtype=theano.config.floatX) / \
-                                  T.maximum((pred | truth).sum(dtype=theano.config.floatX), floatX(1.0))
-                    scores.append(jaccard_cls)
-                elif self.score == self.SCORE_PRECISION:
-                    precision_cls = true_pos.sum(dtype=theano.config.floatX) / \
-                                    T.maximum(pred.sum(dtype=theano.config.floatX), floatX(1.0))
-                    scores.append(precision_cls)
-                elif self.score == self.SCORE_RECALL:
-                    recall_cls = true_pos.sum(dtype=theano.config.floatX) / \
-                                    T.maximum(truth.sum(dtype=theano.config.floatX), floatX(1.0))
-                    scores.append(recall_cls)
-                elif self.score == self.SCORE_F1:
-                    precision_cls = true_pos.sum(dtype=theano.config.floatX) / \
-                                    T.maximum(pred.sum(dtype=theano.config.floatX), floatX(1.0))
-                    recall_cls = true_pos.sum(dtype=theano.config.floatX) / \
-                                    T.maximum(truth.sum(dtype=theano.config.floatX), floatX(1.0))
-                    score_cls = floatX(2.0) * (precision_cls * recall_cls) / \
-                                T.maximum(precision_cls + recall_cls, floatX(1.0))
-                    scores.append(score_cls)
-            # Multiply by n_samples, as `Trainer` divides by it when aggregating the score
-            n_samples = flat_target.shape[0]
-            eval_score = sum(scores) * n_samples / floatX(n_classes)
+                truth = T.eq(flat_target, cls_i).astype(theano.config.floatX)
+                pred = T.eq(eval_pred_cls, cls_i).astype(theano.config.floatX)
+                n_truth = T.neq(flat_target, cls_i).astype(theano.config.floatX)
+                n_pred = T.neq(eval_pred_cls, cls_i).astype(theano.config.floatX)
+                true_neg = n_truth * n_pred
+                true_pos = truth * pred
+                false_neg = truth * n_pred
+                false_pos = n_truth * pred
+
+                eval_scores.extend([true_neg.sum(), false_neg.sum(), false_pos.sum(), true_pos.sum()])
         else:
             raise ValueError('score is not valid ({})'.format(self.score))
 
         if self.n_target_spatial_dims == 0:
             train_loss_batch = train_loss.sum()
             eval_loss_batch = eval_loss.sum()
-            eval_score_batch = eval_score.sum()
         else:
             train_loss_batch = train_loss.sum() * inv_n_spatial
             eval_loss_batch = eval_loss.sum() * inv_n_spatial
-            eval_score_batch = eval_score.sum() * inv_n_spatial
 
         # Unflatten prediction
         pred_prob = _unflatten_spatial_theano(eval_pred_prob, spatial_shape, n_classes)
@@ -221,20 +209,48 @@ class ClassifierObjective (AbstractObjective):
             return '{} loss={:.6f}'.format(self.name, train_res[0])
 
         def eval_results_str_fn(eval_res):
-            return '{} loss={:.6f} {}={:.2%}'.format(self.name, eval_res[0], self.score, eval_res[1])
+            # return '{} loss={:.6f} {}={:.2%}'.format(self.name, eval_res[0], self.score, eval_res[1])
+            return '{} loss={:.6f} {}={:.2%}'.format(self.name, eval_res[0], self.score, self._compute_score(eval_res))
+            # return '{} loss={:.6f} {}={}'.format(self.name, eval_res[0], self.score, eval_res[1:])
 
         return ObjectiveOutput(train_cost=train_loss.mean() * self.cost_weight,
                                train_results=[train_loss_batch],
                                train_results_str_fn=train_results_str_fn,
-                               eval_results=[eval_loss_batch, eval_score_batch],
+                               eval_results=[eval_loss_batch] + eval_scores,
                                eval_results_str_fn=eval_results_str_fn,
                                prediction=pred_prob)
+
+    def _compute_score(self, eval_results):
+        components = eval_results[1:]
+        cls_scores = []
+        for cls_i in range(len(components) // 4):
+            true_neg = components[cls_i * 4 + 0]
+            false_neg = components[cls_i * 4 + 1]
+            false_pos = components[cls_i * 4 + 2]
+            true_pos = components[cls_i * 4 + 3]
+
+            if self.score == self.SCORE_JACCARD:
+                cls_scores.append(true_pos / (false_pos + false_neg + true_pos))
+            elif self.score == self.SCORE_PRECISION:
+                cls_scores.append(true_pos / (false_pos + true_pos))
+            elif self.score == self.SCORE_RECALL:
+                cls_scores.append(true_pos / (false_neg + true_pos))
+            elif self.score == self.SCORE_F1:
+                precision = true_pos / (false_pos + true_pos)
+                recall = true_pos / (false_neg + true_pos)
+                f1 = 2.0 * (precision * recall) / max(precision + recall, 1.0)
+                cls_scores.append(f1)
+            else:
+                raise ValueError('score is not valid ({})'.format(self.score))
+        return np.mean(cls_scores)
+
+
 
     def score_improved(self, new_results, best_so_far_results):
         if self.score == self.SCORE_ERROR:
             return new_results[1] < best_so_far_results[1]
         else:
-            return new_results[1] > best_so_far_results[1]
+            return self._compute_score(new_results) > self._compute_score(best_so_far_results)
 
 
 
