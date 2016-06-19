@@ -220,29 +220,41 @@ class ClassifierObjective (AbstractObjective):
                                eval_results_str_fn=eval_results_str_fn,
                                prediction=pred_prob)
 
-    def _compute_score(self, eval_results):
-        components = eval_results[1:]
-        cls_scores = []
-        for cls_i in range(len(components) // 4):
-            true_neg = components[cls_i * 4 + 0]
-            false_neg = components[cls_i * 4 + 1]
-            false_pos = components[cls_i * 4 + 2]
-            true_pos = components[cls_i * 4 + 3]
+    def _score_frac(self, numerator, denominator):
+        if denominator == 0.0:
+            return 1.0
+        else:
+            return numerator / denominator
 
-            if self.score == self.SCORE_JACCARD:
-                cls_scores.append(true_pos / (false_pos + false_neg + true_pos))
-            elif self.score == self.SCORE_PRECISION:
-                cls_scores.append(true_pos / (false_pos + true_pos))
-            elif self.score == self.SCORE_RECALL:
-                cls_scores.append(true_pos / (false_neg + true_pos))
-            elif self.score == self.SCORE_F1:
-                precision = true_pos / (false_pos + true_pos)
-                recall = true_pos / (false_neg + true_pos)
-                f1 = 2.0 * (precision * recall) / max(precision + recall, 1.0)
-                cls_scores.append(f1)
-            else:
-                raise ValueError('score is not valid ({})'.format(self.score))
-        return np.mean(cls_scores)
+    def _compute_score(self, eval_results):
+        if self.score == self.SCORE_ERROR:
+            return eval_results[1]
+        elif self.score in {self.SCORE_JACCARD, self.SCORE_PRECISION, self.SCORE_RECALL, self.SCORE_F1}:
+            components = eval_results[1:]
+            cls_scores = []
+            for cls_i in range(len(components) // 4):
+                true_neg = components[cls_i * 4 + 0]
+                false_neg = components[cls_i * 4 + 1]
+                false_pos = components[cls_i * 4 + 2]
+                true_pos = components[cls_i * 4 + 3]
+
+                cls_n = true_neg + false_neg + false_pos + true_pos
+
+                if cls_n > 0:
+                    if self.score == self.SCORE_JACCARD:
+                        cls_scores.append(self._score_frac(true_pos, false_pos + false_neg + true_pos))
+                    elif self.score == self.SCORE_PRECISION:
+                        cls_scores.append(self._score_frac(true_pos, false_pos + true_pos))
+                    elif self.score == self.SCORE_RECALL:
+                        cls_scores.append(self._score_frac(true_pos, false_neg + true_pos))
+                    elif self.score == self.SCORE_F1:
+                        precision = self._score_frac(true_pos, false_pos + true_pos)
+                        recall = self._score_frac(true_pos, false_neg + true_pos)
+                        f1 = self._score_frac(2.0 * (precision * recall), precision + recall)
+                        cls_scores.append(f1)
+                    else:
+                        raise ValueError('score is not valid ({})'.format(self.score))
+            return np.mean(cls_scores)
 
 
 

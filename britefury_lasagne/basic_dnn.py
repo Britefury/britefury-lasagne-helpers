@@ -149,7 +149,7 @@ class BasicDNN (object):
         for batch in self.trainer.batch_iterator(X, batchsize=batchsize, shuffle=False):
             if batch_xform_fn is not None:
                 batch = batch_xform_fn(batch)
-            y_batch = self._predict_fn(batch[0])
+            y_batch = self._predict_fn(*batch)
             y.append(y_batch)
         return [np.concatenate(chn, axis=0) for chn in zip(*y)]
 
