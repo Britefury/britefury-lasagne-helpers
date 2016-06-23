@@ -45,7 +45,7 @@ def _flatten_spatial_theano(x, n_channels):
     if n_channels is None:
         if ndim > 1:
             # (Sample,Spatial...) -> (Sample:Spatial...)
-            x = x.reshape((-1,))
+            x = x.flatten()
     else:
         if ndim > 2:
             spatial = tuple(range(2, ndim))
@@ -130,18 +130,19 @@ class ClassifierObjective (AbstractObjective):
     SCORE_RECALL = 'recall'
     SCORE_F1 = 'f1'
 
-    def __init__(self, name, objective_layer, target_expr, n_target_spatial_dims, score=SCORE_ERROR, cost_weight=1.0):
+    def __init__(self, name, objective_layer, target_expr, mask_expr=None, n_target_spatial_dims=0,
+                 score=SCORE_ERROR, cost_weight=1.0):
         super(ClassifierObjective, self).__init__(name, cost_weight)
         self.objective_layer = objective_layer
         self.target_expr = target_expr
+        self.mask_expr = mask_expr
         self.n_target_spatial_dims = n_target_spatial_dims
         self.score = score
 
 
     def build(self):
         flat_target = _flatten_spatial_theano(self.target_expr, None)
-        if flat_target.ndim != 1:
-            raise ValueError('target must have 1 dimensions, not {}'.format(flat_target.ndim))
+        flat_mask = _flatten_spatial_theano(self.mask_expr, None) if self.mask_expr is not None else None
 
         # Flatten the objective layer (if the objective layer generates an
         # output with 2 dimensions then this is a no-op)
@@ -161,12 +162,16 @@ class ClassifierObjective (AbstractObjective):
         # Create a loss expression for training, i.e., a scalar objective we want
         # to minimize (for our multi-class problem, it is the cross-entropy loss):
         train_loss = lasagne.objectives.categorical_crossentropy(train_pred_prob, flat_target)
+        if flat_mask is not None:
+            train_loss = train_loss * flat_mask
 
         # Create prediction expressions; use deterministic forward pass (disable
         # dropout layers)
         eval_pred_prob = lasagne.layers.get_output(prob_layer, deterministic=True)
         # Create evaluation loss expression
         eval_loss = lasagne.objectives.categorical_crossentropy(eval_pred_prob, flat_target)
+        if flat_mask is not None:
+            eval_loss = eval_loss * flat_mask
         # Predicted class
         eval_pred_cls = T.argmax(eval_pred_prob, axis=1)
 
@@ -175,6 +180,8 @@ class ClassifierObjective (AbstractObjective):
         if self.score == self.SCORE_ERROR:
             # Create an expression for error count
             errors = T.neq(eval_pred_cls, flat_target).astype(theano.config.floatX)
+            if flat_mask is not None:
+                errors = errors * flat_mask
 
             if self.n_target_spatial_dims == 0:
                 eval_scores = [errors.sum()]
@@ -184,12 +191,17 @@ class ClassifierObjective (AbstractObjective):
             for cls_i in range(n_classes):
                 truth = T.eq(flat_target, cls_i).astype(theano.config.floatX)
                 pred = T.eq(eval_pred_cls, cls_i).astype(theano.config.floatX)
-                n_truth = T.neq(flat_target, cls_i).astype(theano.config.floatX)
-                n_pred = T.neq(eval_pred_cls, cls_i).astype(theano.config.floatX)
-                true_neg = n_truth * n_pred
+                inv_truth = T.neq(flat_target, cls_i).astype(theano.config.floatX)
+                inv_pred = T.neq(eval_pred_cls, cls_i).astype(theano.config.floatX)
+                true_neg = inv_truth * inv_pred
                 true_pos = truth * pred
-                false_neg = truth * n_pred
-                false_pos = n_truth * pred
+                false_neg = truth * inv_pred
+                false_pos = inv_truth * pred
+                if flat_mask is not None:
+                    true_neg = true_neg * flat_mask
+                    true_pos = true_pos * flat_mask
+                    false_neg = false_neg * flat_mask
+                    false_pos = false_pos * flat_mask
 
                 eval_scores.extend([true_neg.sum(), false_neg.sum(), false_pos.sum(), true_pos.sum()])
         else:
@@ -209,9 +221,7 @@ class ClassifierObjective (AbstractObjective):
             return '{} loss={:.6f}'.format(self.name, train_res[0])
 
         def eval_results_str_fn(eval_res):
-            # return '{} loss={:.6f} {}={:.2%}'.format(self.name, eval_res[0], self.score, eval_res[1])
             return '{} loss={:.6f} {}={:.2%}'.format(self.name, eval_res[0], self.score, self._compute_score(eval_res))
-            # return '{} loss={:.6f} {}={}'.format(self.name, eval_res[0], self.score, eval_res[1:])
 
         return ObjectiveOutput(train_cost=train_loss.mean() * self.cost_weight,
                                train_results=[train_loss_batch],
@@ -222,7 +232,7 @@ class ClassifierObjective (AbstractObjective):
 
     def _score_frac(self, numerator, denominator):
         if denominator == 0.0:
-            return 1.0
+            return 0.0
         else:
             return numerator / denominator
 
@@ -238,7 +248,7 @@ class ClassifierObjective (AbstractObjective):
                 false_pos = components[cls_i * 4 + 2]
                 true_pos = components[cls_i * 4 + 3]
 
-                cls_n = true_neg + false_neg + false_pos + true_pos
+                cls_n = false_neg + false_pos + true_pos
 
                 if cls_n > 0:
                     if self.score == self.SCORE_JACCARD:
@@ -267,10 +277,12 @@ class ClassifierObjective (AbstractObjective):
 
 
 class RegressorObjective (AbstractObjective):
-    def __init__(self, name, objective_layer, target_expr, n_target_spatial_dims, cost_weight=1.0):
+    def __init__(self, name, objective_layer, target_expr, mask_expr=None, n_target_spatial_dims=0,
+                 cost_weight=1.0):
         super(RegressorObjective, self).__init__(name, cost_weight)
         self.objective_layer = objective_layer
         self.target_expr = target_expr
+        self.mask_expr = mask_expr
         self.n_target_spatial_dims = n_target_spatial_dims
 
 
@@ -281,12 +293,16 @@ class RegressorObjective (AbstractObjective):
         # Create a loss expression for training, i.e., a scalar objective we want
         # to minimize; squared error
         train_loss = lasagne.objectives.squared_error(train_pred, self.target_expr)
+        if self.mask_expr is not None:
+            train_loss = train_loss * self.mask_expr
 
         # Create prediction expressions; use deterministic forward pass (disable
         # dropout layers)
         eval_pred = lasagne.layers.get_output(self.objective_layer, deterministic=True)
         # Create evaluation loss expression
         eval_loss = lasagne.objectives.squared_error(eval_pred, self.target_expr)
+        if self.mask_expr is not None:
+            eval_loss = eval_loss * self.mask_expr
 
         if self.n_target_spatial_dims == 0:
             train_loss_batch = train_loss.sum()

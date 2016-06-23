@@ -356,6 +356,8 @@ class Trainer (object):
         else:
             state_at_start = None
 
+        validation_results = None
+        best_train_results = None
         best_validation_results = None
         best_epoch = None
         best_state = None
@@ -420,6 +422,7 @@ class Trainer (object):
                     validation_improved = True
 
                     # Validation score improved
+                    best_train_results = train_results
                     best_validation_results = validation_results
                     best_epoch = epoch
                     best_state = self._save_state()
@@ -470,10 +473,21 @@ class Trainer (object):
             self._restore_state(best_state)
 
         if self.log_final_result:
-            final_train_results = all_train_results[-1] if len(all_train_results) > 0 else None
-            self._log("Final result:\n")
-            self._log_epoch_results(best_epoch, train_end_time - train_start_time, final_train_results,
-                                    best_validation_results, test_results)
+            if self.verbosity == VERBOSITY_MINIMAL:
+                self._log('\n')
+            if state_saved and self.get_state_fn is not None:
+                self._log("Final result:\n")
+                self._log_epoch_results(best_epoch, train_end_time - train_start_time, best_train_results,
+                                        best_validation_results, test_results)
+            else:
+                final_train_results = all_train_results[-1] if len(all_train_results) > 0 else None
+                final_test_results = test_results if best_epoch == epoch - 1 else None
+                self._log("Best result:\n")
+                self._log_epoch_results(best_epoch, train_end_time - train_start_time, best_train_results,
+                                        best_validation_results, test_results)
+                self._log("Final result:\n")
+                self._log_epoch_results(epoch - 1, train_end_time - train_start_time, final_train_results,
+                                        validation_results, final_test_results)
 
 
         return TrainingResults(
