@@ -86,6 +86,18 @@ class WorkStream (object):
 
         return value
 
+    def retrieve_iter(self):
+        """
+        Retrieve a result from executing a task. Note that tasks are executed in order and that if the next
+        task has not yet completed, this call will block until the result is available.
+        :return: the result returned by the task function.
+        """
+        while len(self.__result_buffer) > 0:
+            res = self.__result_buffer.popleft()
+            value = res.get()
+            self.__populate_buffer()
+            yield value
+
 
 import unittest, os
 
