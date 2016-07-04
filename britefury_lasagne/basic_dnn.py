@@ -6,7 +6,7 @@ from . import trainer, dnn_objective
 
 
 class BasicDNN (object):
-    def __init__(self, input_vars, target_vars, final_layers, objectives,
+    def __init__(self, input_vars, target_and_mask_vars, final_layers, objectives,
                  score_objective=None,
                  trainable_params=None, updates_fn=None, params_path=None):
         """
@@ -26,7 +26,7 @@ class BasicDNN (object):
         :param params_path: [optional] path from which to load network parameters
         """
         self.input_vars = input_vars
-        self.target_vars = target_vars
+        self.target_and_mask_vars = target_and_mask_vars
         self.final_layers = final_layers
         self.objectives = objectives
 
@@ -71,10 +71,10 @@ class BasicDNN (object):
 
         # Compile a function performing a training step on a mini-batch (by giving
         # the updates dictionary) and returning the corresponding training loss:
-        self._train_fn = theano.function(input_vars + target_vars, train_results, updates=updates)
+        self._train_fn = theano.function(input_vars + target_and_mask_vars, train_results, updates=updates)
 
         # Compile a function computing the validation loss and error:
-        self._val_fn = theano.function(input_vars + target_vars, eval_results)
+        self._val_fn = theano.function(input_vars + target_and_mask_vars, eval_results)
 
         # Compile a function computing the predicted probability
         self._predict_fn = theano.function(input_vars, predictions)
@@ -155,7 +155,8 @@ class BasicDNN (object):
 
 
 def simple_classifier(network_build_fn, n_input_spatial_dims=0, n_target_spatial_dims=0,
-                      score=dnn_objective.ClassifierObjective.SCORE_ERROR, params_path=None, *args, **kwargs):
+                      score=dnn_objective.ClassifierObjective.SCORE_ERROR, mask=False,
+                      params_path=None, *args, **kwargs):
     """
     Construct an image classifier, given a network building function
     and an optional path from which to load parameters.
@@ -188,11 +189,11 @@ def simple_classifier(network_build_fn, n_input_spatial_dims=0, n_target_spatial
         raise ValueError('Valid values for n_input_spatial_dims are in the range 0-3, not {}'.format(
             n_target_spatial_dims))
     return classifier(input_vars, network_build_fn, n_target_spatial_dims=n_target_spatial_dims,
-                      score=score, params_path=params_path, *args, **kwargs)
+                      score=score, mask=mask, params_path=params_path, *args, **kwargs)
 
 
 def classifier(input_vars, network_build_fn, n_target_spatial_dims=0,
-               score=dnn_objective.ClassifierObjective.SCORE_ERROR,
+               score=dnn_objective.ClassifierObjective.SCORE_ERROR, mask=False,
                params_path=None, *args, **kwargs):
     """
     Construct a classifier, given input variables and a network building function
@@ -222,17 +223,36 @@ def classifier(input_vars, network_build_fn, n_target_spatial_dims=0,
         raise ValueError('Valid values for n_target_spatial_dims are in the range 0-3, not {}'.format(
             n_target_spatial_dims))
 
+    if mask:
+        if n_target_spatial_dims == 0:
+            mask_var = T.vector('m')
+        elif n_target_spatial_dims == 1:
+            mask_var = T.matrix('m')
+        elif n_target_spatial_dims == 2:
+            mask_var = T.tensor3('m')
+        elif n_target_spatial_dims == 3:
+            mask_var = T.tensor4('m')
+        else:
+            raise ValueError('Valid values for n_target_spatial_dims are in the range 0-3, not {}'.format(
+                n_target_spatial_dims))
+        mask_vars = [mask_var]
+    else:
+        mask_var = None
+        mask_vars = []
+
+
     # Build the network
     print("Building model and compiling functions...")
     network = network_build_fn(input_vars=input_vars)
 
-    objective = dnn_objective.ClassifierObjective('y', network, target_var,
+    objective = dnn_objective.ClassifierObjective('y', network, target_var, mask_expr=mask_var,
                                                   n_target_spatial_dims=n_target_spatial_dims, score=score)
 
-    return BasicDNN(input_vars, [target_var], network, [objective], params_path=params_path, *args, **kwargs)
+    return BasicDNN(input_vars, [target_var] + mask_vars, network, [objective],
+                    params_path=params_path, *args, **kwargs)
 
 
-def simple_regressor(network_build_fn, n_input_spatial_dims=0, n_target_spatial_dims=0,
+def simple_regressor(network_build_fn, n_input_spatial_dims=0, n_target_spatial_dims=0, mask=False,
                      params_path=None, *args, **kwargs):
     """
     Construct a vector regressor, given a network building function
@@ -265,10 +285,11 @@ def simple_regressor(network_build_fn, n_input_spatial_dims=0, n_target_spatial_
         raise ValueError('Valid values for n_input_spatial_dims are in the range 0-3, not {}'.format(
             n_target_spatial_dims))
     return regressor(input_vars, network_build_fn, n_target_spatial_dims=n_target_spatial_dims,
-                     params_path=params_path, *args, **kwargs)
+                     mask=mask, params_path=params_path, *args, **kwargs)
 
 
-def regressor(input_vars, network_build_fn, n_target_spatial_dims=0, params_path=None, *args, **kwargs):
+def regressor(input_vars, network_build_fn, n_target_spatial_dims=0, mask=False,
+              params_path=None, *args, **kwargs):
     """
     Construct a regressor, given a network building function
     and an optional path from which to load parameters.
@@ -297,12 +318,29 @@ def regressor(input_vars, network_build_fn, n_target_spatial_dims=0, params_path
         raise ValueError('Valid values for n_target_spatial_dims are in the range 0-3, not {}'.format(
             n_target_spatial_dims))
 
+    if mask:
+        if n_target_spatial_dims == 0:
+            mask_var = T.vector('m')
+        elif n_target_spatial_dims == 1:
+            mask_var = T.matrix('m')
+        elif n_target_spatial_dims == 2:
+            mask_var = T.tensor3('m')
+        elif n_target_spatial_dims == 3:
+            mask_var = T.tensor4('m')
+        else:
+            raise ValueError('Valid values for n_target_spatial_dims are in the range 0-3, not {}'.format(
+                n_target_spatial_dims))
+        mask_vars = [mask_var]
+    else:
+        mask_var = None
+        mask_vars = []
 
     # Build the network
     print("Building model and compiling functions...")
     network = network_build_fn(input_vars=input_vars)
 
-    objective = dnn_objective.RegressorObjective('y', network, target_var,
+    objective = dnn_objective.RegressorObjective('y', network, target_var, mask_expr=mask_var,
                                                  n_target_spatial_dims=n_target_spatial_dims)
 
-    return BasicDNN(input_vars, [target_var], network, [objective], params_path=params_path, *args, **kwargs)
+    return BasicDNN(input_vars, [target_var] + mask_vars, network, [objective],
+                    params_path=params_path, *args, **kwargs)
