@@ -297,8 +297,8 @@ class Trainer (object):
 
         :param layer: a `lasagne.layers.Layer`.
         """
-        get_state = lambda: lasagne.layers.get_all_param_values(layer, trainable=True)
-        set_state = lambda state: lasagne.layers.set_all_param_values(layer, state, trainable=True)
+        get_state = lambda: lasagne.layers.get_all_param_values(layer)
+        set_state = lambda state: lasagne.layers.set_all_param_values(layer, state)
         self.retain_best_scoring_state(get_state, set_state)
         return self
 
@@ -716,8 +716,8 @@ class Test_Trainer (unittest.TestCase):
 
     def test_validate_with_store_state(self):
         log = cStringIO.StringIO()
-        train_fn = self.TrainFunction()
-        eval_fn = self.TrainFunction([[i] for i in xrange(200)])
+        train_fn = self.TrainFunction(states=np.arange(1000,3005,5))
+        eval_fn = self.TrainFunction([[i] for i in xrange(200, -1, -2)] + [[i] for i in xrange(0, 200, 2)])
 
         trainer = Trainer()
         trainer.train_with(train_batch_fn=train_fn)
@@ -732,8 +732,9 @@ class Test_Trainer (unittest.TestCase):
         self.assertEqual(train_fn.count, 400)
         self.assertEqual(eval_fn.count, 200)
         self.assertEqual(log.getvalue(), '')
-        self.assertEqual(train_fn.state_get_count, 1)
+        self.assertEqual(train_fn.state_get_count, 101)
         self.assertEqual(train_fn.state_set_count, 1)
+        self.assertEqual(train_fn.current_state, 2005)
 
 
     def test_validation_interval(self):
