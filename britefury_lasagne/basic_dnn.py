@@ -39,7 +39,7 @@ class BasicDNN (object):
         self.score_objective = score_objective
 
         if params_path is not None:
-            trainer.load_model(params_path, final_layers)
+            self.load_params(params_path)
 
         self.objective_results = [obj.build() for obj in self.objectives]
         train_cost = sum([obj_res.train_cost for obj_res in self.objective_results])
@@ -93,6 +93,25 @@ class BasicDNN (object):
         # Tell the trainer to store parameters when the validation score (error rate) is best
         # self.trainer.retain_best_scoring_state_of_updates(updates)
         self.trainer.retain_best_scoring_state_of_network(final_layers)
+
+
+    def load_params(self, params_path):
+        trainer.load_model(params_path, self.final_layers)
+
+    def save_params(self, params_path):
+        trainer.save_model(params_path, self.final_layers)
+
+    def get_param_values(self):
+        return lasagne.layers.get_all_param_values(self.final_layers)
+
+    def set_param_values(self, values):
+        return lasagne.layers.set_all_param_values(self.final_layers, values)
+
+    def get_params(self):
+        return lasagne.layers.get_all_params(self.final_layers)
+
+    def get_param_names(self):
+        return [p.name for p in self.get_params()]
 
 
     def _check_train_epoch_results(self, epoch, train_epoch_results):
