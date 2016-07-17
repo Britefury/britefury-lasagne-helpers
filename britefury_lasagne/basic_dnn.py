@@ -13,11 +13,14 @@ class BasicDNN (object):
         Constructor - construct a `SampleDNN` instance given variables for
         input, target and a final layer (a Lasagne layer)
         :param input_vars: input variables, a list of Theano variables
-        :param final_layers: a list of Lasagne layers that when followed backward will cover
+        :param target_and_mask_vars: target and mask variables, a list of Theano variables
+        :param final_layers: a list of Lasagne layers that when followed backward will
                 result in all layers being visited
         :param objectives: a list of objectives to optimise
-        :param trainable_params: [optional] a list of parameters to train. If None, then the trainable parameters
-                of all layers will be used
+        :param score_objective: the objective that is used to measure the performance of the network
+                for the purpose of early stopping
+        :param trainable_params: [optional] a list of parameters to train. If `None`, then the
+                parameters from all the layers in the network will be used
         :param updates_fn: [optional] a function of the form `fn(cost, params) -> updates` that
             generates update expressions given the cost and the parameters to update using
             an optimisation technique e.g. Nesterov Momentum:
@@ -96,21 +99,49 @@ class BasicDNN (object):
 
 
     def load_params(self, params_path):
+        """
+        Load parameters from an NPZ file found at the specified path
+        :param params_path: path of file from which to load parameters
+        """
         trainer.load_model(params_path, self.final_layers)
 
     def save_params(self, params_path):
+        """
+        Save parameters to an NPZ file found at the specified path
+        :param params_path: path of file to save parameters to
+        """
         trainer.save_model(params_path, self.final_layers)
 
     def get_param_values(self):
+        """
+        Get the values of all parameters in the network
+        :return: a list of NumPy arrays
+        """
         return lasagne.layers.get_all_param_values(self.final_layers)
 
     def set_param_values(self, values):
+        """
+        Set the values of all parameters in the network.
+
+        Walks the network and extracts a list containing all parameters, then updates
+        each parameter with the value in the corresponding position in `values`.
+
+        :param values: a list of NumPy arrays that contain the values for the parameters
+        """
         return lasagne.layers.set_all_param_values(self.final_layers, values)
 
     def get_params(self):
+        """
+        Get all parameters in the network
+        :return: a list of Theano shared variables
+        """
         return lasagne.layers.get_all_params(self.final_layers)
 
     def get_param_names(self):
+        """
+        Get the names of all parameters in the network
+        :return: a list of strings
+        """
         return [p.name for p in self.get_params()]
 
 
@@ -164,6 +195,14 @@ class BasicDNN (object):
 
 
     def predict(self, X, batchsize=500, batch_xform_fn=None):
+        """
+        Evaluate the network, returning its predictions
+
+        :param X: input data, in the form of
+        :param batchsize:
+        :param batch_xform_fn:
+        :return:
+        """
         y = []
         for batch in self.trainer.batch_iterator(X, batchsize=batchsize, shuffle=False):
             if batch_xform_fn is not None:
@@ -179,7 +218,7 @@ def simple_classifier(network_build_fn, n_input_spatial_dims=0, n_target_spatial
     """
     Construct an image classifier, given a network building function
     and an optional path from which to load parameters.
-    :param network_build_fn: network builder function of the form `fn(input_var, **kwargs) -> lasagne_layer`
+    :param network_build_fn: network builder function of the form `fn(input_vars) -> lasagne_layer`
     that constructs a network in the form of a Lasagne layer, given an input variable (a Theano variable)
     :param n_target_spatial_dims: the number of spatial dimensions for the input;
         0 for input sample with matrix variable type (sample, channel)
@@ -218,7 +257,7 @@ def classifier(input_vars, network_build_fn, n_target_spatial_dims=0,
     Construct a classifier, given input variables and a network building function
     and an optional path from which to load parameters.
     :param input_vars: a list of input variables
-    :param network_build_fn: network builder function of the form `fn(input_var, **kwargs) -> lasagne_layer`
+    :param network_build_fn: network builder function of the form `fn(input_vars) -> lasagne_layer`
     that constructs a network in the form of a Lasagne layer, given an input variable (a Theano variable)
     :param n_target_spatial_dims: the number of spatial dimensions for the target;
         0 for predict per sample with ivector variable type
@@ -276,7 +315,7 @@ def simple_regressor(network_build_fn, n_input_spatial_dims=0, n_target_spatial_
     """
     Construct a vector regressor, given a network building function
     and an optional path from which to load parameters.
-    :param network_build_fn: network builder function of the form `fn(input_var, **kwargs) -> lasagne_layer`
+    :param network_build_fn: network builder function of the form `fn(input_vars) -> lasagne_layer`
     that constructs a network in the form of a Lasagne layer, given an input variable (a Theano variable)
     :param n_target_spatial_dims: the number of spatial dimensions for the input;
         0 for input sample with matrix variable type (sample, channel)
@@ -313,7 +352,7 @@ def regressor(input_vars, network_build_fn, n_target_spatial_dims=0, mask=False,
     Construct a regressor, given a network building function
     and an optional path from which to load parameters.
     :param input_vars: a list of input variables
-    :param network_build_fn: network builder function of the form `fn(input_var, **kwargs) -> lasagne_layer`
+    :param network_build_fn: network builder function of the form `fn(input_vars) -> lasagne_layer`
     that constructs a network in the form of a Lasagne layer, given an input variable (a Theano variable)
     :param n_target_spatial_dims: the number of spatial dimensions for the target;
         0 for predict per sample with matrix variable type (sample, channel)

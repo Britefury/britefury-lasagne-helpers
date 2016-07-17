@@ -331,6 +331,30 @@ class Trainer (object):
         """
         Run the training loop.
 
+        The datasets (`train_set`, `val_set` and `test_set`) must take the form of one of:
+        - a list of numpy arrays - one for each variable (input/target/etc) - where each array
+            contains an entry for each sample in the complete dataset
+        - a Fuel Dataset instance
+        - a function of the form `fn(batchsize, shuffle=False) -> iterator_fn` that generates an
+            iterator, where the iterator generates mini-batches, where each mini-batch is of the form
+            of a list of numpy arrays, e.g.
+
+
+        >>> def make_iterator(X, y):
+        ...     def iter_minibatches(batchsize, shuffle=False):
+        ...         indices = np.arange(X.shape[0])
+        ...         if shuffle:
+        ...             np.random.shuffle(indices)
+        ...         for i in range(0, indices.shape[0], batchsize):
+        ...             batch_ndx = indices[i:i+batchsize]
+        ...             batch_X = X[batch_ndx]
+        ...             batch_y = y[batch_ndx]
+        ...             yield [batch_X, batch_y]
+        ...     return iter_minibatches
+        >>> trainer.train(make_iterator(train_X, train_y),
+        ...               make_iterator(val_X, val_y),
+        ...               make_iterator(test_X, test_y), batchsize=128)
+
         :param train_set: the training set
         :param val_set: the validation set, or `None`
         :param test_set: the test set, or `None`
