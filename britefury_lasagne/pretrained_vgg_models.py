@@ -20,18 +20,16 @@ import skimage.transform, skimage.color
 from lasagne.layers import InputLayer, DenseLayer, NonlinearityLayer, DropoutLayer, Pool2DLayer, Conv2DLayer
 from lasagne.nonlinearities import softmax
 from lasagne.utils import floatX
+from . import config
 
 if sys.version_info[0] == 2:
     from urllib import urlretrieve
 else:
     from urllib.request import urlretrieve
 
-PARAMS_DIR = 'pretrained_models'
+_PARAMS_DIR_NAME = 'pretrained_models'
 
-if not os.path.exists(PARAMS_DIR):
-    _local_dir = os.path.split(__file__)[0]
-    PARAMS_DIR = os.path.normpath(os.path.join(_local_dir, '..', 'pretrained_models'))
-    del _local_dir
+PARAMS_DIR = os.path.join(config.get_data_dir_path(), _PARAMS_DIR_NAME)
 
 
 def download(path, source_url):
