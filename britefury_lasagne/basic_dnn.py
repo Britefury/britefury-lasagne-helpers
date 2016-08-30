@@ -212,6 +212,54 @@ class BasicDNN (object):
         return [np.concatenate(chn, axis=0) for chn in zip(*y)]
 
 
+class BasicClassifierDNN (BasicDNN):
+    """
+    A simple classifier DNN; its purpose is to provide the `temperature` property for
+    changing the temperature of the softmax nonlinearity in order to 'soften' predicted
+    probabilities.
+    """
+    def __init__(self, input_vars, target_and_mask_vars, final_layers, classifier_objective,
+                 score_objective=None,
+                 trainable_params=None, updates_fn=None, params_path=None):
+        if not isinstance(classifier_objective, dnn_objective.ClassifierObjective):
+            raise TypeError('classifier_objective must be an instance of dnn_objective.ClassifierObjective')
+        super(BasicClassifierDNN, self).__init__(input_vars, target_and_mask_vars, final_layers,
+                                                 [classifier_objective], score_objective=score_objective,
+                                                 trainable_params=trainable_params, updates_fn=updates_fn,
+                                                 params_path=params_path)
+        self._classifier_objective = classifier_objective
+
+    @property
+    def temperature(self):
+        return self._classifier_objective.temperature
+
+    @temperature.setter
+    def temperature(self, t):
+        self._classifier_objective.temperature = t
+
+    def predict(self, X, batchsize=500, batch_xform_fn=None, temperature=None):
+        """
+        Evaluate the network, returning its predictions
+
+        :param X: input data, in the form of
+        :param batchsize:
+        :param batch_xform_fn:
+        :param temperature: the softmax temperature
+        :return:
+        """
+        old_temperature = None
+        if temperature is not None:
+            old_temperature = self.temperature
+            self.temperature = temperature
+        res = super(BasicClassifierDNN, self).predict(X, batchsize=batchsize,
+                                                      batch_xform_fn=batch_xform_fn)
+        if temperature is not None:
+            self.temperature = old_temperature
+
+        return res
+
+
+
 def simple_classifier(network_build_fn, n_input_spatial_dims=0, n_target_spatial_dims=0,
                       score=dnn_objective.ClassifierObjective.SCORE_ERROR, mask=False,
                       params_path=None, *args, **kwargs):
@@ -306,9 +354,8 @@ def classifier(input_vars, network_build_fn, n_target_spatial_dims=0,
     objective = dnn_objective.ClassifierObjective('y', network, target_var, mask_expr=mask_var,
                                                   n_target_spatial_dims=n_target_spatial_dims, score=score)
 
-    return BasicDNN(input_vars, [target_var] + mask_vars, network, [objective],
-                    params_path=params_path, *args, **kwargs)
-
+    return BasicClassifierDNN(input_vars, [target_var] + mask_vars, network, objective,
+                              params_path=params_path, *args, **kwargs)
 
 def simple_regressor(network_build_fn, n_input_spatial_dims=0, n_target_spatial_dims=0, mask=False,
                      params_path=None, *args, **kwargs):

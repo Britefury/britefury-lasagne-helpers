@@ -138,6 +138,16 @@ class ClassifierObjective (AbstractObjective):
         self.mask_expr = mask_expr
         self.n_target_spatial_dims = n_target_spatial_dims
         self.score = score
+        self.softmax = TemperatureSoftmax()
+
+
+    @property
+    def temperature(self):
+        return self.softmax.temperature
+
+    @temperature.setter
+    def temperature(self, t):
+        self.softmax.temperature = t
 
 
     def build(self):
@@ -153,8 +163,7 @@ class ClassifierObjective (AbstractObjective):
         inv_n_spatial = lasagne.utils.floatX(1.0 / float(n_spatial))
 
         # Predicted probability layer
-        softmax = TemperatureSoftmax()
-        prob_layer = lasagne.layers.NonlinearityLayer(obj_flat_layer, softmax)
+        prob_layer = lasagne.layers.NonlinearityLayer(obj_flat_layer, self.softmax)
 
         # Get an expression representing the predicted probability
         train_pred_prob = lasagne.layers.get_output(prob_layer)
