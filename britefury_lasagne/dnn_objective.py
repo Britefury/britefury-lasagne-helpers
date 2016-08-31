@@ -131,12 +131,13 @@ class ClassifierObjective (AbstractObjective):
     SCORE_F1 = 'f1'
 
     def __init__(self, name, objective_layer, target_expr, mask_expr=None, n_target_spatial_dims=0,
-                 score=SCORE_ERROR, cost_weight=1.0):
+                 target_channel_index=None, score=SCORE_ERROR, cost_weight=1.0):
         super(ClassifierObjective, self).__init__(name, cost_weight)
         self.objective_layer = objective_layer
         self.target_expr = target_expr
         self.mask_expr = mask_expr
         self.n_target_spatial_dims = n_target_spatial_dims
+        self.target_channel_index = target_channel_index
         self.score = score
         self.softmax = TemperatureSoftmax()
 
@@ -151,8 +152,15 @@ class ClassifierObjective (AbstractObjective):
 
 
     def build(self):
-        flat_target = _flatten_spatial_theano(self.target_expr, None)
-        flat_mask = _flatten_spatial_theano(self.mask_expr, None) if self.mask_expr is not None else None
+        if self.target_channel_index is not None:
+            target_expr = self.target_expr[:,self.target_channel_index]
+            mask_expr = self.mask_expr[:,self.target_channel_index] if self.mask_expr is not None else None
+        else:
+            target_expr = self.target_expr
+            mask_expr = self.mask_expr
+
+        flat_target = _flatten_spatial_theano(target_expr, None)
+        flat_mask = _flatten_spatial_theano(mask_expr, None) if self.mask_expr is not None else None
 
         # Flatten the objective layer (if the objective layer generates an
         # output with 2 dimensions then this is a no-op)

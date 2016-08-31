@@ -67,14 +67,14 @@ class BasicDNN (object):
         if trainable_params is None:
             trainable_params = lasagne.layers.get_all_params(final_layers, trainable=True)
         if updates_fn is None:
-            updates = lasagne.updates.nesterov_momentum(
+            self._updates = lasagne.updates.nesterov_momentum(
                     train_cost, trainable_params, learning_rate=0.01, momentum=0.9)
         else:
-            updates = updates_fn(train_cost, trainable_params)
+            self._updates = updates_fn(train_cost, trainable_params)
 
         # Compile a function performing a training step on a mini-batch (by giving
         # the updates dictionary) and returning the corresponding training loss:
-        self._train_fn = theano.function(input_vars + target_and_mask_vars, train_results, updates=updates)
+        self._train_fn = theano.function(input_vars + target_and_mask_vars, train_results, updates=self._updates)
 
         # Compile a function computing the validation loss and error:
         self._val_fn = theano.function(input_vars + target_and_mask_vars, eval_results)
@@ -98,28 +98,31 @@ class BasicDNN (object):
         self.trainer.retain_best_scoring_state_of_network(final_layers)
 
 
-    def load_params(self, params_path):
+    def load_params(self, params_path, include_updates=False):
         """
         Load parameters from an NPZ file found at the specified path
         :param params_path: path of file from which to load parameters
         """
-        trainer.load_model(params_path, self.final_layers)
+        updates = self._updates if include_updates else None
+        trainer.load_model(params_path, self.final_layers, updates=updates)
 
-    def save_params(self, params_path):
+    def save_params(self, params_path, include_updates=False):
         """
         Save parameters to an NPZ file found at the specified path
         :param params_path: path of file to save parameters to
         """
-        trainer.save_model(params_path, self.final_layers)
+        updates = self._updates if include_updates else None
+        trainer.save_model(params_path, self.final_layers, updates=updates)
 
-    def get_param_values(self):
+    def get_param_values(self, include_updates=False):
         """
         Get the values of all parameters in the network
         :return: a list of NumPy arrays
         """
-        return lasagne.layers.get_all_param_values(self.final_layers)
+        params = self.get_params(include_updates)
+        return trainer.get_param_values(params)
 
-    def set_param_values(self, values):
+    def set_param_values(self, values, include_updates=False):
         """
         Set the values of all parameters in the network.
 
@@ -128,21 +131,24 @@ class BasicDNN (object):
 
         :param values: a list of NumPy arrays that contain the values for the parameters
         """
-        return lasagne.layers.set_all_param_values(self.final_layers, values)
+        params = self.get_params(include_updates)
+        trainer.set_param_values(params, values)
 
-    def get_params(self):
+    def get_params(self, include_updates=False):
         """
         Get all parameters in the network
+        :param include_updates: if True, include parameters used for updates
         :return: a list of Theano shared variables
         """
-        return lasagne.layers.get_all_params(self.final_layers)
+        updates = self._updates if include_updates else None
+        return trainer.get_network_params(self.final_layers, updates=updates)
 
-    def get_param_names(self):
+    def get_param_names(self, include_updates=False):
         """
         Get the names of all parameters in the network
         :return: a list of strings
         """
-        return [p.name for p in self.get_params()]
+        return [p.name for p in self.get_params(include_updates=include_updates)]
 
 
     def _check_train_epoch_results(self, epoch, train_epoch_results):
@@ -204,7 +210,7 @@ class BasicDNN (object):
         :return:
         """
         y = []
-        for batch in self.trainer.batch_iterator(X, batchsize=batchsize, shuffle=False):
+        for batch in self.trainer.batch_iterator(X, batchsize, False):
             if batch_xform_fn is not None:
                 batch = batch_xform_fn(batch)
             y_batch = self._predict_fn(*batch)
@@ -261,7 +267,7 @@ class BasicClassifierDNN (BasicDNN):
 
 
 def simple_classifier(network_build_fn, n_input_spatial_dims=0, n_target_spatial_dims=0,
-                      score=dnn_objective.ClassifierObjective.SCORE_ERROR, mask=False,
+                      target_channel_index=None, score=dnn_objective.ClassifierObjective.SCORE_ERROR, mask=False,
                       params_path=None, *args, **kwargs):
     """
     Construct an image classifier, given a network building function
@@ -278,6 +284,13 @@ def simple_classifier(network_build_fn, n_input_spatial_dims=0, n_target_spatial
         1 for 1-dimensional prediction e.g. time series, with imatrix variable type (sample, time),
         2 for 2-dimensional prediction e.g. image, with itensor3 variable type (sample, height, width),
         3 for 3-dimensional prediction e.g. volumn, with itensor4 variable type (sample, depth, height, width),
+    :param target_channel_index: if None, targets are assumed not to have a channel dimension. If an integer,
+        then this channel will be used for the target, e.g.
+        for a target with 0 spatial dimensions, if `target_channel_index` is `None` then the targets
+        should have shape `(sample,)`, while if there are 5 channels and the target uses channel 2,
+        the target should have shape `(sample, 5)` and we will access the target indices in channel, e.g. `y[:,2]`.
+        Note that the additional channel dimension adds an additional dimension to target and mask variables, e.g.
+        0, 1, 2 and 3 dimensional targets and masks use imatrix, itensor3, itensor4 and itensor5 variable types.
     :param score: the scoring metric used to evaluate classifier performance (see `dnn_objective.ClassifierObjective`)
     :param params_path: [optional] path from which to load network parameters
     :return: a classifier instance
@@ -295,10 +308,11 @@ def simple_classifier(network_build_fn, n_input_spatial_dims=0, n_target_spatial
         raise ValueError('Valid values for n_input_spatial_dims are in the range 0-3, not {}'.format(
             n_target_spatial_dims))
     return classifier(input_vars, network_build_fn, n_target_spatial_dims=n_target_spatial_dims,
-                      score=score, mask=mask, params_path=params_path, *args, **kwargs)
+                      target_channel_index=target_channel_index, score=score, mask=mask,
+                      params_path=params_path, *args, **kwargs)
 
 
-def classifier(input_vars, network_build_fn, n_target_spatial_dims=0,
+def classifier(input_vars, network_build_fn, n_target_spatial_dims=0, target_channel_index=None,
                score=dnn_objective.ClassifierObjective.SCORE_ERROR, mask=False,
                params_path=None, *args, **kwargs):
     """
@@ -311,32 +325,40 @@ def classifier(input_vars, network_build_fn, n_target_spatial_dims=0,
         0 for predict per sample with ivector variable type
         1 for 1-dimensional prediction e.g. time series, with imatrix variable type (sample, time),
         2 for 2-dimensional prediction e.g. image, with itensor3 variable type (sample, height, width),
-        3 for 3-dimensional prediction e.g. volumn, with itensor4 variable type (sample, depth, height, width),
+        3 for 3-dimensional prediction e.g. volume, with itensor4 variable type (sample, depth, height, width),
+    :param target_channel_index: if None, targets are assumed not to have a channel dimension. If an integer,
+        then this channel will be used for the target, e.g.
+        for a target with 0 spatial dimensions, if `target_channel_index` is `None` then the targets
+        should have shape `(sample,)`, while if there are 5 channels and the target uses channel 2,
+        the target should have shape `(sample, 5)` and we will access the target indices in channel, e.g. `y[:,2]`.
+        Note that the additional channel dimension adds an additional dimension to target and mask variables, e.g.
+        0, 1, 2 and 3 dimensional targets and masks use imatrix, itensor3, itensor4 and itensor5 variable types.
     :param score: the scoring metric used to evaluate classifier performance (see `dnn_objective.ClassifierObjective`)
     :param params_path: [optional] path from which to load network parameters
     :return: a classifier instance
     """
     # Prepare Theano variables for inputs and targets
-    if n_target_spatial_dims == 0:
+    n_target_tims = n_target_spatial_dims + (0 if target_channel_index is None else 1)
+    if n_target_tims == 0:
         target_var = T.ivector('y')
-    elif n_target_spatial_dims == 1:
+    elif n_target_tims == 1:
         target_var = T.imatrix('y')
-    elif n_target_spatial_dims == 2:
+    elif n_target_tims == 2:
         target_var = T.itensor3('y')
-    elif n_target_spatial_dims == 3:
+    elif n_target_tims == 3:
         target_var = T.itensor4('y')
     else:
         raise ValueError('Valid values for n_target_spatial_dims are in the range 0-3, not {}'.format(
             n_target_spatial_dims))
 
     if mask:
-        if n_target_spatial_dims == 0:
+        if n_target_tims == 0:
             mask_var = T.vector('m')
-        elif n_target_spatial_dims == 1:
+        elif n_target_tims == 1:
             mask_var = T.matrix('m')
-        elif n_target_spatial_dims == 2:
+        elif n_target_tims == 2:
             mask_var = T.tensor3('m')
-        elif n_target_spatial_dims == 3:
+        elif n_target_tims == 3:
             mask_var = T.tensor4('m')
         else:
             raise ValueError('Valid values for n_target_spatial_dims are in the range 0-3, not {}'.format(
@@ -348,11 +370,11 @@ def classifier(input_vars, network_build_fn, n_target_spatial_dims=0,
 
 
     # Build the network
-    print("Building model and compiling functions...")
     network = network_build_fn(input_vars=input_vars)
 
     objective = dnn_objective.ClassifierObjective('y', network, target_var, mask_expr=mask_var,
-                                                  n_target_spatial_dims=n_target_spatial_dims, score=score)
+                                                  n_target_spatial_dims=n_target_spatial_dims,
+                                                  target_channel_index=target_channel_index, score=score)
 
     return BasicClassifierDNN(input_vars, [target_var] + mask_vars, network, objective,
                               params_path=params_path, *args, **kwargs)
@@ -441,7 +463,6 @@ def regressor(input_vars, network_build_fn, n_target_spatial_dims=0, mask=False,
         mask_vars = []
 
     # Build the network
-    print("Building model and compiling functions...")
     network = network_build_fn(input_vars=input_vars)
 
     objective = dnn_objective.RegressorObjective('y', network, target_var, mask_expr=mask_var,
