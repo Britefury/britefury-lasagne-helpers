@@ -112,6 +112,12 @@ class AbstractObjective (object):
     inv_transform_prediction = None
 
     def __init__(self, name, cost_weight=1.0):
+        """
+        Abstract objective
+
+        :param name: name of objective
+        :param cost_weight: (default=1.0) weight applied to this objectives cost
+        """
         self.name = name
         self.cost_weight = lasagne.utils.floatX(cost_weight)
 
@@ -132,6 +138,23 @@ class ClassifierObjective (AbstractObjective):
 
     def __init__(self, name, objective_layer, target_expr, mask_expr=None, n_target_spatial_dims=0,
                  target_channel_index=None, score=SCORE_ERROR, cost_weight=1.0):
+        """
+        Multi-class classifier objective
+
+        :param name: objective name
+        :param objective_layer: Lasagne layer that with a softmax non-linearity added to it will predict the class
+        probabilities
+        :param target_expr: ground truth target expression
+        :param mask_expr: [optional] mask expression
+        :param n_target_spatial_dims: (default=0) number of spatial dimensions for the target
+        :param target_channel_index: (default=None) if the target has a channel dimension, this is the index into
+        that channel for this objective
+        :param score: (default=`'err'`) how to evaluate this objective; one of `'err'`, `'jaccard'`, `'precision'`,
+        `'recall'`, `'f1'` or use the constants `ClassifierObjective.SCORE_ERROR`, `ClassifierObjective.SCORE_JACCARD`,
+        `ClassifierObjective.SCORE_PRECISION`, `ClassifierObjective.SCORE_RECALL`, `ClassifierObjective.SCORE_F1`
+        respectively
+        :param cost_weight: (default=1.0) weight applied to the cost of this objective
+        """
         super(ClassifierObjective, self).__init__(name, cost_weight)
         self.objective_layer = objective_layer
         self.target_expr = target_expr
@@ -296,6 +319,16 @@ class ClassifierObjective (AbstractObjective):
 class RegressorObjective (AbstractObjective):
     def __init__(self, name, objective_layer, target_expr, mask_expr=None, n_target_spatial_dims=0,
                  cost_weight=1.0):
+        """
+        Regression objective
+
+        :param name: objective name
+        :param objective_layer: Lasagne layer that will predict the output
+        :param target_expr: ground truth target expression
+        :param mask_expr: [optional] mask expression
+        :param n_target_spatial_dims: (default=0) number of spatial dimensions for the target
+        :param cost_weight: (default=1.0) weight applied to the cost of this objective
+        """
         super(RegressorObjective, self).__init__(name, cost_weight)
         self.objective_layer = objective_layer
         self.target_expr = target_expr

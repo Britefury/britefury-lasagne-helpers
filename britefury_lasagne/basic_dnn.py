@@ -292,6 +292,8 @@ def simple_classifier(network_build_fn, n_input_spatial_dims=0, n_target_spatial
         Note that the additional channel dimension adds an additional dimension to target and mask variables, e.g.
         0, 1, 2 and 3 dimensional targets and masks use imatrix, itensor3, itensor4 and itensor5 variable types.
     :param score: the scoring metric used to evaluate classifier performance (see `dnn_objective.ClassifierObjective`)
+    :param mask: (default=False) if True, samples will be masked, in which case sample weights/masks should
+    be passed during training
     :param params_path: [optional] path from which to load network parameters
     :return: a classifier instance
     """
@@ -334,6 +336,8 @@ def classifier(input_vars, network_build_fn, n_target_spatial_dims=0, target_cha
         Note that the additional channel dimension adds an additional dimension to target and mask variables, e.g.
         0, 1, 2 and 3 dimensional targets and masks use imatrix, itensor3, itensor4 and itensor5 variable types.
     :param score: the scoring metric used to evaluate classifier performance (see `dnn_objective.ClassifierObjective`)
+    :param mask: (default=False) if True, samples will be masked, in which case sample weights/masks should
+    be passed during training
     :param params_path: [optional] path from which to load network parameters
     :return: a classifier instance
     """
@@ -396,6 +400,8 @@ def simple_regressor(network_build_fn, n_input_spatial_dims=0, n_target_spatial_
         1 for 1-dimensional prediction e.g. time series, with tensor3 variable type (sample, channel, time),
         2 for 2-dimensional prediction e.g. image, with tensor4 variable type (sample, channel, height, width),
         3 for 3-dimensional prediction e.g. volume, with tensor5 variable type (sample, channel, depth, height, width),
+    :param mask: (default=False) if True, samples will be masked, in which case sample weights/masks should
+    be passed during training
     :param params_path: [optional] path from which to load network parameters
     :return: a classifier instance
     """
@@ -428,6 +434,8 @@ def regressor(input_vars, network_build_fn, n_target_spatial_dims=0, mask=False,
         1 for 1-dimensional prediction e.g. time series, with tensor3 variable type (sample, channel, time),
         2 for 2-dimensional prediction e.g. image, with tensor4 variable type (sample, channel, height, width),
         3 for 3-dimensional prediction e.g. volume, with tensor5 variable type (sample, channel, depth, height, width),
+    :param mask: (default=False) if True, samples will be masked, in which case sample weights/masks should
+    be passed during training
     :param params_path: [optional] path from which to load network parameters
     :return: a classifier instance
     """
