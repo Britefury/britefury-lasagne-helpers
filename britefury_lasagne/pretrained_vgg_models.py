@@ -32,23 +32,6 @@ _PARAMS_DIR_NAME = 'pretrained_models'
 PARAMS_DIR = os.path.join(config.get_data_dir_path(), _PARAMS_DIR_NAME)
 
 
-def download(path, source_url):
-    if not os.path.exists(PARAMS_DIR):
-        os.makedirs(PARAMS_DIR)
-    if not os.path.exists(path):
-        print('Downloading {0} to {1}'.format(source_url, path))
-        urlretrieve(source_url, path)
-    return path
-
-
-def get_params_dir():
-    return PARAMS_DIR
-
-def set_params_dir(d):
-    global PARAMS_DIR
-    PARAMS_DIR = d
-
-
 def _get_vgg16_path():
     return os.path.join(PARAMS_DIR, 'vgg16.pkl')
 
@@ -267,7 +250,7 @@ class VGG16Model (VGGModel):
 
     @staticmethod
     def load_params():
-        download(_get_vgg16_path(), 'http://s3.amazonaws.com/lasagne/recipes/pretrained/imagenet/vgg16.pkl')
+        config.download(_get_vgg16_path(), 'http://s3.amazonaws.com/lasagne/recipes/pretrained/imagenet/vgg16.pkl')
         return VGGModel.unpickle_from_path(_get_vgg16_path())
 
     @classmethod
@@ -342,7 +325,7 @@ class VGG19Model (VGGModel):
 
     @staticmethod
     def load_params():
-        download(_get_vgg19_path(), 'http://s3.amazonaws.com/lasagne/recipes/pretrained/imagenet/vgg19.pkl')
+        config.download(_get_vgg19_path(), 'http://s3.amazonaws.com/lasagne/recipes/pretrained/imagenet/vgg19.pkl')
         return VGGModel.unpickle_from_path(_get_vgg19_path())
 
     @classmethod

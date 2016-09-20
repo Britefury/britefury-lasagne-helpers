@@ -1,4 +1,8 @@
-import json, os
+import json, os, sys
+if sys.version_info[0] == 2:
+    from urllib import urlretrieve
+else:
+    from urllib.request import urlretrieve
 
 _SETTINGS_PATH = os.path.expanduser(os.path.join('~', '.britefury_lasagne_config.json'))
 _DEFAULT_DATA_PATH = os.path.expanduser(os.path.join('~', '.britefury_lasagne'))
@@ -46,3 +50,15 @@ def get_data_dir_path():
                 raise RuntimeError('britefury_lasasgne: the DATA directory path ({}) specified in the '
                                    'settings file does not exist'.format(_data_dir_path__))
     return _data_dir_path__
+
+
+def download(path, source_url):
+    dir_path = os.path.split(path)[0]
+    if not os.path.exists(dir_path):
+        os.makedirs(dir_path)
+    if not os.path.exists(path):
+        print('Downloading {0} to {1}'.format(source_url, path))
+        urlretrieve(source_url, path)
+    return path
+
+

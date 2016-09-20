@@ -1,9 +1,12 @@
-import sys, time, re
+import sys, time, re, six, itertools
 import numpy as np
 import lasagne
-from fuel.schemes import ShuffledScheme, SequentialScheme
-from fuel.streams import DataStream
-from fuel.datasets import Dataset
+try:
+    from fuel.schemes import ShuffledScheme, SequentialScheme
+    from fuel.streams import DataStream
+    from fuel.datasets import Dataset
+except ImportError:
+    ShuffledScheme = SequentialScheme = DataStream = Dataset = NotImplemented
 
 
 VERBOSITY_NONE = None
@@ -223,7 +226,7 @@ class Trainer (object):
         """
         self.eval_batch_fn = eval_batch_fn
         self.eval_log_fn = eval_log_fn
-        if isinstance(validation_improved_fn, (int, long)):
+        if isinstance(validation_improved_fn, six.integer_types):
             self.validation_improved_fn = lambda x, y: x[validation_improved_fn] < y[validation_improved_fn]
         elif callable(validation_improved_fn):
             self.validation_improved_fn = validation_improved_fn
@@ -585,7 +588,7 @@ class Trainer (object):
     def batch_iterator(self, dataset, batchsize, shuffle, shuffle_rng=None):
         if shuffle and shuffle_rng is None:
             shuffle_rng = lasagne.random.get_rng()
-        if isinstance(dataset, Dataset):
+        if Dataset is not NotImplemented and isinstance(dataset, Dataset):
             if shuffle:
                 train_scheme = ShuffledScheme(examples=dataset.num_examples, batch_size=batchsize, rng=shuffle_rng)
             else:
@@ -651,7 +654,7 @@ class Trainer (object):
         return results_accum
 
 
-import unittest, cStringIO
+import unittest
 
 class Test_Trainer (unittest.TestCase):
     class TrainFunction (object):
@@ -685,7 +688,7 @@ class Test_Trainer (unittest.TestCase):
             if self.results is None:
                 return None
             else:
-                return [r*batch_N for r in self.results[i/self.result_repeat]]
+                return [r*batch_N for r in self.results[i//self.result_repeat]]
 
 
 
@@ -696,7 +699,7 @@ class Test_Trainer (unittest.TestCase):
 
 
     def test_no_eval_fn(self):
-        log = cStringIO.StringIO()
+        log = six.moves.cStringIO()
         train_fn = self.TrainFunction()
 
         trainer = Trainer()
@@ -709,7 +712,7 @@ class Test_Trainer (unittest.TestCase):
 
 
     def test_train(self):
-        log = cStringIO.StringIO()
+        log = six.moves.cStringIO()
         train_fn = self.TrainFunction()
 
         trainer = Trainer()
@@ -736,8 +739,8 @@ class Test_Trainer (unittest.TestCase):
 
 
     def test_validate_with(self):
-        log = cStringIO.StringIO()
-        val_out = [[i] for i in xrange(200)]
+        log = six.moves.cStringIO()
+        val_out = [[i] for i in range(200)]
         train_fn = self.TrainFunction()
         eval_fn = self.TrainFunction(val_out)
 
@@ -758,9 +761,10 @@ class Test_Trainer (unittest.TestCase):
 
 
     def test_validate_with_store_state(self):
-        log = cStringIO.StringIO()
+        log = six.moves.cStringIO()
         train_fn = self.TrainFunction(states=np.arange(1000,3005,5))
-        eval_fn = self.TrainFunction([[i] for i in xrange(200, -1, -2)] + [[i] for i in xrange(0, 200, 2)])
+        eval_fn = self.TrainFunction([[i] for i in range(200, -1, -2)] +
+                                     [[i] for i in range(0, 200, 2)])
 
         trainer = Trainer()
         trainer.train_with(train_batch_fn=train_fn)
@@ -781,11 +785,11 @@ class Test_Trainer (unittest.TestCase):
 
 
     def test_validation_interval(self):
-        log = cStringIO.StringIO()
+        log = six.moves.cStringIO()
         train_fn = self.TrainFunction()
         def on_eval():
             self.assertTrue(train_fn.count in range(1, 201, 10))
-        eval_fn = self.TrainFunction([[i] for i in xrange(200)], on_invoke=on_eval)
+        eval_fn = self.TrainFunction([[i] for i in range(200)], on_invoke=on_eval)
 
         trainer = Trainer()
         trainer.train_with(train_batch_fn=train_fn)
@@ -801,9 +805,9 @@ class Test_Trainer (unittest.TestCase):
 
 
     def test_validation_score_index(self):
-        val_output = zip(range(200), range(101,1,-1) + range(1,101,1))
+        val_output = zip(range(200), itertools.chain(range(101,1,-1), range(1,101,1)))
         val_output = [list(xs) for xs in val_output]
-        log = cStringIO.StringIO()
+        log = six.moves.cStringIO()
         train_fn = self.TrainFunction()
         eval_fn = self.TrainFunction(val_output)
 
@@ -824,9 +828,9 @@ class Test_Trainer (unittest.TestCase):
 
 
     def test_validation_score_fn(self):
-        val_output = zip(range(200), range(101,1,-1) + range(1,101,1))
+        val_output = zip(range(200), itertools.chain(range(101,1,-1), range(1,101,1)))
         val_output = [list(xs) for xs in val_output]
-        log = cStringIO.StringIO()
+        log = six.moves.cStringIO()
         train_fn = self.TrainFunction()
         eval_fn = self.TrainFunction(val_output)
 
@@ -847,9 +851,9 @@ class Test_Trainer (unittest.TestCase):
 
 
     def test_train_for_num_epochs(self):
-        val_output = zip(range(200), range(101,1,-1) + range(1,101,1))
+        val_output = zip(range(200), itertools.chain(range(101,1,-1), range(1,101,1)))
         val_output = [list(xs) for xs in val_output]
-        log = cStringIO.StringIO()
+        log = six.moves.cStringIO()
         train_fn = self.TrainFunction()
         eval_fn = self.TrainFunction(val_output)
 
@@ -870,9 +874,9 @@ class Test_Trainer (unittest.TestCase):
 
 
     def test_train_for_min_epochs(self):
-        val_output = zip(range(200), range(101,1,-1) + range(1,101,1))
+        val_output = zip(range(200), itertools.chain(range(101,1,-1), range(1,101,1)))
         val_output = [list(xs) for xs in val_output]
-        log = cStringIO.StringIO()
+        log = six.moves.cStringIO()
         train_fn = self.TrainFunction()
         eval_fn = self.TrainFunction(val_output)
 
@@ -893,9 +897,9 @@ class Test_Trainer (unittest.TestCase):
 
 
     def test_train_for_val_improve_num_epochs(self):
-        val_output = zip(range(200), range(101,1,-1) + range(1,101,1))
+        val_output = zip(range(200), itertools.chain(range(101,1,-1), range(1,101,1)))
         val_output = [list(xs) for xs in val_output]
-        log = cStringIO.StringIO()
+        log = six.moves.cStringIO()
         train_fn = self.TrainFunction()
         eval_fn = self.TrainFunction(val_output)
 
@@ -916,9 +920,9 @@ class Test_Trainer (unittest.TestCase):
 
 
     def test_train_for_val_improve_epochs_factor(self):
-        val_output = zip(range(200), range(75,0,-1) + range(0,125,1))
+        val_output = zip(range(200), itertools.chain(range(75,0,-1), range(0,125,1)))
         val_output = [list(xs) for xs in val_output]
-        log = cStringIO.StringIO()
+        log = six.moves.cStringIO()
         train_fn = self.TrainFunction()
         eval_fn = self.TrainFunction(val_output)
 
@@ -939,9 +943,9 @@ class Test_Trainer (unittest.TestCase):
 
 
     def test_report_verbosity_none(self):
-        val_output = zip(range(200), range(75,0,-1) + range(0,125,1))
+        val_output = zip(range(200), itertools.chain(range(75,0,-1), range(0,125,1)))
         val_output = [list(xs) for xs in val_output]
-        log = cStringIO.StringIO()
+        log = six.moves.cStringIO()
         train_fn = self.TrainFunction()
         eval_fn = self.TrainFunction(val_output)
 
@@ -957,9 +961,9 @@ class Test_Trainer (unittest.TestCase):
 
 
     def test_report_verbosity_minimal(self):
-        val_output = zip(range(200), range(75,0,-1) + range(0,125,1))
+        val_output = zip(range(200), itertools.chain(range(75,0,-1), range(0,125,1)))
         val_output = [list(xs) for xs in val_output]
-        log = cStringIO.StringIO()
+        log = six.moves.cStringIO()
         train_fn = self.TrainFunction()
         eval_fn = self.TrainFunction(val_output)
 
@@ -977,9 +981,9 @@ class Test_Trainer (unittest.TestCase):
 
 
     def test_report_verbosity_epoch(self):
-        val_output = zip(range(200), range(75,0,-1) + range(0,125,1))
+        val_output = zip(range(200), itertools.chain(range(75,0,-1), range(0,125,1)))
         val_output = [list(xs) for xs in val_output]
-        log = cStringIO.StringIO()
+        log = six.moves.cStringIO()
         train_fn = self.TrainFunction(val_output)
         eval_fn = self.TrainFunction(val_output)
 
@@ -996,18 +1000,23 @@ class Test_Trainer (unittest.TestCase):
         log_lines = log.getvalue().split('\n')
         for i, line in enumerate(log_lines):
             if line.strip() != '':
-                pattern = re.escape('Epoch {0} ('.format(i)) + \
-                          r'[0-9]+\.[0-9]+s' + \
-                          re.escape('): train [{0}L, {1}L], validation [{0}L, {1}L]'.format(val_output[i][0], val_output[i][1]))
+                if sys.version_info[0] == 2:
+                    pattern = re.escape('Epoch {0} ('.format(i)) + \
+                              r'[0-9]+\.[0-9]+s' + \
+                              re.escape('): train [{0}L, {1}L], validation [{0}L, {1}L]'.format(val_output[i][0], val_output[i][1]))
+                else:
+                    pattern = re.escape('Epoch {0} ('.format(i)) + \
+                              r'[0-9]+\.[0-9]+s' + \
+                              re.escape('): train [{0}, {1}], validation [{0}, {1}]'.format(float(val_output[i][0]), float(val_output[i][1])))
                 match = re.match(pattern, line)
                 if match is None or match.end(0) != len(line):
                     self.fail(msg='No match "{}" with pattern "{}"'.format(line, pattern))
 
 
     def test_report_verbosity_batch(self):
-        val_output = zip(range(200), range(75,0,-1) + range(0,125,1))
+        val_output = zip(range(200), itertools.chain(range(75,0,-1), range(0,125,1)))
         val_output = [list(xs) for xs in val_output]
-        log = cStringIO.StringIO()
+        log = six.moves.cStringIO()
         train_fn = self.TrainFunction()
         eval_fn = self.TrainFunction(val_output, result_repeat=4)
 
@@ -1024,9 +1033,14 @@ class Test_Trainer (unittest.TestCase):
         log_lines = log.getvalue().split('\n')
         for i, (line_a, line_b) in enumerate(zip(log_lines[:-2:2], log_lines[1:-2:2])):
             if line_a.strip() != '' and line_b.strip() != '':
-                pattern_b = re.escape('Epoch {0} ('.format(i)) + \
-                          r'[0-9]+\.[0-9]+s' + \
-                          re.escape('): train None, validation [{0}L, {1}L]'.format(val_output[i][0], val_output[i][1]))
+                if sys.version_info[0] == 2:
+                    pattern_b = re.escape('Epoch {0} ('.format(i)) + \
+                              r'[0-9]+\.[0-9]+s' + \
+                              re.escape('): train None, validation [{0}L, {1}L]'.format(val_output[i][0], val_output[i][1]))
+                else:
+                    pattern_b = re.escape('Epoch {0} ('.format(i)) + \
+                              r'[0-9]+\.[0-9]+s' + \
+                              re.escape('): train None, validation [{0}, {1}]'.format(float(val_output[i][0]), float(val_output[i][1])))
                 self.assertEqual(line_a, '[....]')
                 match = re.match(pattern_b, line_b)
                 if match is None or match.end(0) != len(line_b):
@@ -1035,9 +1049,9 @@ class Test_Trainer (unittest.TestCase):
 
     def test_report_epoch_log_fn(self):
         train_output = [[x] for x in range(200)]
-        val_output = zip(range(200), range(75,0,-1) + range(0,125,1))
+        val_output = zip(range(200), itertools.chain(range(75,0,-1), range(0,125,1)))
         val_output = [list(xs) for xs in val_output]
-        log = cStringIO.StringIO()
+        log = six.moves.cStringIO()
         train_fn = self.TrainFunction(train_output)
         eval_fn = self.TrainFunction(val_output)
 
@@ -1063,5 +1077,8 @@ class Test_Trainer (unittest.TestCase):
         log_lines = log.getvalue().split('\n')
         for i, line in enumerate(log_lines):
             if line.strip() != '':
-                self.assertEqual('{}: train: {}, val: {} {}'.format(i, train_output[i][0], val_output[i][0], val_output[i][1]), line)
+                if sys.version_info[0] == 2:
+                    self.assertEqual('{}: train: {}, val: {} {}'.format(i, train_output[i][0], val_output[i][0], val_output[i][1]), line)
+                else:
+                    self.assertEqual('{}: train: {}, val: {} {}'.format(i, float(train_output[i][0]), float(val_output[i][0]), float(val_output[i][1])), line)
 
