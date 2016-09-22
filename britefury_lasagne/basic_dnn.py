@@ -67,8 +67,8 @@ class BasicDNN (object):
         if trainable_params is None:
             trainable_params = lasagne.layers.get_all_params(final_layers, trainable=True)
         if updates_fn is None:
-            self._updates = lasagne.updates.nesterov_momentum(
-                    train_cost, trainable_params, learning_rate=0.01, momentum=0.9)
+            self._updates = lasagne.updates.adam(
+                    train_cost, trainable_params, learning_rate=0.001)
         else:
             self._updates = updates_fn(train_cost, trainable_params)
 
@@ -182,8 +182,9 @@ class BasicDNN (object):
         """
         Epoch logging callback, passed to the `self.trainer.report()`
         """
+        epoch_n = (epoch_number + 1) if epoch_number is not None else '<final>'
         items = []
-        items.append('Epoch {}/{} took {:.2f}s:'.format(epoch_number + 1, self.trainer.num_epochs, delta_time))
+        items.append('Epoch {}/{} took {:.2f}s:'.format(epoch_n, self.trainer.num_epochs, delta_time))
         items.append('  TRAIN ')
 
         if train_str is not None:

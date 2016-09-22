@@ -24,7 +24,7 @@ def _load_mnist_images(filename):
     # The inputs come as bytes, we convert them to float32 in range [0,1].
     # (Actually to range [0, 255/256], for compatibility to the version
     # provided at http://deeplearning.net/data/mnist/mnist.pkl.gz.)
-    return data / np.float32(256)
+    return (data / np.float32(256)).astype(np.float32)
 
 def _load_mnist_labels(filename):
     # Download if necessary
@@ -33,7 +33,7 @@ def _load_mnist_labels(filename):
     with gzip.open(path, 'rb') as f:
         data = np.frombuffer(f.read(), np.uint8, offset=8)
     # The labels are vectors of integers now, that's exactly what we want.
-    return data
+    return data.astype(np.int32)
 
 
 class MNIST (object):
