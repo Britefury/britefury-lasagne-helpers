@@ -205,13 +205,17 @@ class BasicDNN (object):
         """
         Evaluate the network, returning its predictions
 
-        :param X: input data, in the form of
-        :param batchsize:
-        :param batch_xform_fn:
-        :return:
+        :param X: input data, in the same form as described in the `Trainer.train`, `Trainer.batch_loop`
+        and `Trainer.batch_iterator` methods
+        :param batchsize: the mini-batch size
+        :param batch_xform_fn: optional pre-process function to transform mini-batches of input data before passing
+        them to the network prediction function
+        :return: a list of predicted outputs, where each entry corresponds to a training objective
+        e.g. a simple classifier will return the list `[pred_prob]` where `pred_prob` is the predicted class
+        probabilities
         """
         y = []
-        for batch in self.trainer.batch_iterator(X, batchsize, False):
+        for batch in self.trainer.batch_iterator(X, batchsize, None):
             if batch_xform_fn is not None:
                 batch = batch_xform_fn(batch)
             y_batch = self._predict_fn(*batch)
@@ -248,11 +252,14 @@ class BasicClassifierDNN (BasicDNN):
         """
         Evaluate the network, returning its predictions
 
-        :param X: input data, in the form of
-        :param batchsize:
-        :param batch_xform_fn:
-        :param temperature: the softmax temperature
-        :return:
+        :param X: input data, in the same form as described in the `Trainer.train`, `Trainer.batch_loop`
+        and `Trainer.batch_iterator` methods
+        :param batchsize: the mini-batch size
+        :param batch_xform_fn: optional pre-process function to transform mini-batches of input data before passing
+        them to the network prediction function
+        :return: a list of predicted outputs, where each entry corresponds to a training objective
+        e.g. a simple classifier will return the list `[pred_prob]` where `pred_prob` is the predicted class
+        probabilities
         """
         old_temperature = None
         if temperature is not None:

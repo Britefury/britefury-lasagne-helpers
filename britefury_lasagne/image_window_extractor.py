@@ -5,16 +5,20 @@ import tiling_scheme
 
 
 class ImageWindowExtractor (object):
-    def __init__(self, images, image_read_fn, tiling, pad_mode='reflect', downsample=None):
+    def __init__(self, images, image_read_fn, tiling, pad_mode='reflect', downsample=None, postprocess_fn=None):
         """
 
         :param images: a list of images to read; these can be paths, IDs, objects
         :param image_read_fn: an image reader function of the form `fn(image) -> np.array[H,W,C]`
         :param tiling: a `tiling_scheme.TilingScheme` instance that describes how windows are to be extracted
         `from the data
+        :param postprocess_fn: [optional] a post processing function of the form
+        `postprocess_fn(extracted_windows) -> transformed_extracted_windows` that applies some sort of transformation
+        to the extracted data
         """
         self.images = images
         self.image_read_fn = image_read_fn
+        self.postprocess_fn = postprocess_fn
         self.N_images = len(images)
         img0 = self.image_read_fn(images[0])
         self.input_img_shape = img0.shape[:2]
@@ -89,7 +93,10 @@ class ImageWindowExtractor (object):
 
     def get_windows(self, indices):
         img_i, block_y, block_x = self.window_indices_to_coords(indices)
-        return self.get_windows_by_coords(np.concatenate([img_i[:,None], block_y[:,None], block_x[:,None]], axis=1))
+        windows = self.get_windows_by_coords(np.concatenate([img_i[:,None], block_y[:,None], block_x[:,None]], axis=1))
+        if self.postprocess_fn is not None:
+            windows = self.postprocess_fn(windows)
+        return windows
 
     def get_windows_by_coords(self, coords):
         """
@@ -103,6 +110,8 @@ class ImageWindowExtractor (object):
             win = self.X[img_i[i], :, block_y[i]:block_y[i]+self.tiling.tile_shape[0],
                   block_x[i]:block_x[i]+self.tiling.tile_shape[1]]
             windows[i,:,:,:] = win
+        if self.postprocess_fn is not None:
+            windows = self.postprocess_fn(windows)
         return windows
 
 
@@ -132,7 +141,7 @@ class ImageWindowExtractor (object):
         indices = np.arange(self.N)
         if shuffle_rng is not None:
             shuffle_rng.shuffle(indices)
-        for start_idx in range(0, self.N - batchsize + 1, batchsize):
+        for start_idx in range(0, self.N, batchsize):
             yield (self.get_windows(indices[start_idx:start_idx + batchsize]), )
 
 
