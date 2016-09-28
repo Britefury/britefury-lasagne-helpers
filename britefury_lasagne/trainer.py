@@ -73,21 +73,19 @@ def _is_sequence_of_arrays(dataset):
     return False
 
 
-def iterate_minibatches(data, batchsize, shuffle=False, shuffle_rng=None):
+def iterate_minibatches(data, batchsize, shuffle_rng=None):
     N = data[0].shape[0]
     for d1 in data[1:]:
         assert d1.shape[0] == N
-    if shuffle:
-        if shuffle_rng is None:
-            shuffle_rng = lasagne.random.get_rng()
+    if shuffle_rng is not None:
         indices = np.arange(N)
         shuffle_rng.shuffle(indices)
-    for start_idx in range(0, N, batchsize):
-        if shuffle:
+        for start_idx in range(0, N, batchsize):
             excerpt = indices[start_idx:start_idx + batchsize]
-        else:
-            excerpt = slice(start_idx, start_idx + batchsize)
-        yield [d[excerpt] for d in data]
+            yield [d[excerpt] for d in data]
+    else:
+        for start_idx in range(0, N, batchsize):
+            yield [d[start_idx:start_idx+batchsize] for d in data]
 
 
 def _default_epoch_log_fn(epoch_number, delta_time, train_str, val_str, test_str):
@@ -146,6 +144,8 @@ class Trainer (object):
         self.fuel_stream_xform_fn = None
         self.batch_xform_fn = None
 
+        self.shuffle_rng = lasagne.random.get_rng()
+
         self.train_batch_fn = None
         self.train_log_fn = None
         self.train_epoch_results_check_fn = None
@@ -172,6 +172,14 @@ class Trainer (object):
         self.get_state_fn = None
         self.set_state_fn = None
 
+
+    def set_shuffle_randomstate(self, shuffle_rng):
+        """
+        Set the RandomState used for shuffling samples during training
+
+        :param shuffle_rng: a `numpy.random.RandomState` instance
+        """
+        self.shuffle_rng = shuffle_rng
 
     def train_with(self, train_batch_fn, train_log_fn=None, train_epoch_results_check_fn=None, pass_epoch_number=False):
         """
@@ -345,23 +353,33 @@ class Trainer (object):
         return self
 
 
-    def train(self, train_set, val_set, test_set, batchsize, shuffle_rng=None):
+    def train(self, train_set, val_set, test_set, batchsize):
         """
         Run the training loop.
 
         The datasets (`train_set`, `val_set` and `test_set`) must take the form of one of:
         - a list of numpy arrays - one for each variable (input/target/etc) - where each array
-            contains an entry for each sample in the complete dataset
-        - a Fuel Dataset instance
-        - a function of the form `fn(batchsize, shuffle=False) -> iterator_fn` that generates an
-            iterator, where the iterator generates mini-batches, where each mini-batch is of the form
-            of a list of numpy arrays, e.g.
+            contains an entry for each sample in the complete dataset:
 
+        >>> train_X = np.random.normal(size=(5000,3,24,24)) # 5000 samples, 3 channel 24x24 images
+        >>> train_y = np.random.randint(0, 5, size=(5000,)) # 5000 samples, classes
+        >>> # similar for val_X, val_y, test_X, test_y
+        >>> trainer.train([train_X, train_y], [val_X, val_y], [test_X, test_y], batchsize=128)
+
+        - a Fuel Dataset instance:
+
+        >>> train_dataset = load_fuel_dataset
+        >>> # similar for val_dataset and test_dataset
+        >>> trainer.train(train_dataset, val_dataset, test_dataset, batchsize=128)
+
+        - a function of the form `fn(batchsize, shuffle_rng=None) -> iterator` that generates an
+            iterator, where the iterator generates mini-batches, where each mini-batch is of the form
+            of a list of numpy arrays:
 
         >>> def make_iterator(X, y):
-        ...     def iter_minibatches(batchsize, shuffle, shuffle_rng):
+        ...     def iter_minibatches(batchsize, shuffle_rng=None):
         ...         indices = np.arange(X.shape[0])
-        ...         if shuffle:
+        ...         if shuffle_rng is not None:
         ...             shuffle_rng.shuffle(indices)
         ...         for i in range(0, indices.shape[0], batchsize):
         ...             batch_ndx = indices[i:i+batchsize]
@@ -393,9 +411,6 @@ class Trainer (object):
 
         stop_at_epoch = self.min_epochs
         epoch = 0
-
-        if shuffle_rng is None:
-            shuffle_rng = lasagne.random.get_rng()
 
         # If we have a training results check function, save the state
         if self.train_epoch_results_check_fn is not None:
@@ -433,7 +448,7 @@ class Trainer (object):
 
             # Train
             train_epoch_args = (epoch,) if self.train_pass_epoch_number else None
-            train_results = self._batch_loop(self.train_batch_fn, train_set, batchsize, True, shuffle_rng,
+            train_results = self.batch_loop(self.train_batch_fn, train_set, batchsize, self.shuffle_rng,
                                              on_complete_batch=on_train_batch, prepend_args=train_epoch_args)
 
             if self.train_epoch_results_check_fn is not None:
@@ -461,7 +476,7 @@ class Trainer (object):
             # VALIDATION
             if val_set is not None and self._should_validate(epoch):
                 validated = True
-                validation_results = self._batch_loop(self.eval_batch_fn, val_set, batchsize, False)
+                validation_results = self.batch_loop(self.eval_batch_fn, val_set, batchsize, None)
 
                 if best_validation_results is None or \
                         self.validation_improved_fn(validation_results, best_validation_results):
@@ -480,13 +495,13 @@ class Trainer (object):
 
                     if test_set is not None:
                         tested = True
-                        test_results = self._batch_loop(self.eval_batch_fn, test_set, batchsize, False)
+                        test_results = self.batch_loop(self.eval_batch_fn, test_set, batchsize, None)
             else:
                 validation_results = None
 
             if not tested and test_set is not None and val_set is None:
                 tested = True
-                test_results = self._batch_loop(self.eval_batch_fn, test_set, batchsize, False)
+                test_results = self.batch_loop(self.eval_batch_fn, test_set, batchsize, None)
 
             if self.verbosity == VERBOSITY_BATCH or self.verbosity == VERBOSITY_EPOCH:
                 self._log_epoch_results(epoch, time.time() - epoch_start_time, train_results,
@@ -585,11 +600,50 @@ class Trainer (object):
             return False
 
 
-    def batch_iterator(self, dataset, batchsize, shuffle, shuffle_rng=None):
-        if shuffle and shuffle_rng is None:
-            shuffle_rng = lasagne.random.get_rng()
+    def batch_iterator(self, dataset, batchsize, shuffle_rng=None):
+        """
+        Create an iterator that will iterate over the data in `dataset` in mini-batches consisting of `batchsize`
+        samples, shuffled using the random number generate `shuffle_rng` if supplied or in-order if not.
+
+        The data in `dataset` must take the form of:
+
+        - a list of numpy arrays - one for each variable (input/target/etc) - where each array
+            contains an entry for each sample in the complete dataset:
+
+        >>> train_X = np.random.normal(size=(5000,3,24,24)) # 5000 samples, 3 channel 24x24 images
+        >>> train_y = np.random.randint(0, 5, size=(5000,)) # 5000 samples, classes
+        >>> trainer.batch_iterator([train_X, train_y], batchsize=128, shuffle_rng=rng)
+
+        - a Fuel Dataset instance:
+
+        >>> train_dataset = load_fuel_dataset
+        >>> trainer.batch_iterator(train_dataset, batchsize=128, shuffle_rng=rng)
+
+        - a function of the form `fn(batchsize, shuffle_rng=None) -> iterator` that generates an
+            iterator, where the iterator generates mini-batches, where each mini-batch is of the form
+            of a list of numpy arrays:
+
+        >>> def make_iterator(X, y):
+        ...     def iter_minibatches(batchsize, shuffle_rng=None):
+        ...         indices = np.arange(X.shape[0])
+        ...         if shuffle_rng is not None:
+        ...             shuffle_rng.shuffle(indices)
+        ...         for i in range(0, indices.shape[0], batchsize):
+        ...             batch_ndx = indices[i:i+batchsize]
+        ...             batch_X = X[batch_ndx]
+        ...             batch_y = y[batch_ndx]
+        ...             yield [batch_X, batch_y]
+        ...     return iter_minibatches
+        >>> trainer.batch_iterator(make_iterator(train_X, train_y), batchsize=128, shuffle_rng=rng)
+
+        :param dataset: the data to draw mini-batches from.
+        :param batchsize: the mini-batch size
+        :param shuffle_rng: [optional] a random number generator used to to shuffle the order of samples before
+            building mini-batches
+        :return: an iterator
+        """
         if Dataset is not NotImplemented and isinstance(dataset, Dataset):
-            if shuffle:
+            if shuffle_rng is not None:
                 train_scheme = ShuffledScheme(examples=dataset.num_examples, batch_size=batchsize, rng=shuffle_rng)
             else:
                 train_scheme = SequentialScheme(examples=dataset.num_examples, batch_size=batchsize)
@@ -600,20 +654,64 @@ class Trainer (object):
                 stream = self.fuel_stream_xform_fn(stream)
             return stream.get_epoch_iterator()
         elif _is_sequence_of_arrays(dataset):
-            return iterate_minibatches(dataset, batchsize, shuffle=shuffle, shuffle_rng=shuffle_rng)
+            return iterate_minibatches(dataset, batchsize, shuffle_rng=shuffle_rng)
         elif callable(dataset):
-            return dataset(batchsize, shuffle=shuffle, shuffle_rng=shuffle_rng)
+            return dataset(batchsize, shuffle_rng=shuffle_rng)
         else:
             raise TypeError('dataset should be a fuel Dataset instance or a list of arrays')
 
 
-    def _batch_loop(self, fn, data, batchsize, shuffle, shuffle_rng=None, on_complete_batch=None, prepend_args=None):
+    def batch_loop(self, fn, data, batchsize, shuffle_rng=None, on_complete_batch=None, prepend_args=None):
+        """
+        Split data into mini-batches and apply a function to each mini-batch. The function is usually a
+        training or evaluation function.
+
+        The dataset in `data` must take one of the following forms:
+        - a list of numpy arrays - one for each variable (input/target/etc) - where each array
+            contains an entry for each sample in the complete dataset:
+
+        >>> train_X = np.random.normal(size=(5000,3,24,24)) # 5000 samples, 3 channel 24x24 images
+        >>> train_y = np.random.randint(0, 5, size=(5000,)) # 5000 samples, classes
+        >>> trainer.batch_loop(train_function, [train_X, train_y], batchsize=128, shuffle_rng=rng)
+
+        - a Fuel Dataset instance:
+
+        >>> train_dataset = load_fuel_dataset
+        >>> trainer.batch_loop(train_function, train_dataset, batchsize=128, shuffle_rng=rng)
+
+        - a function of the form `fn(batchsize, shuffle_rng=None) -> iterator` that generates an
+            iterator, where the iterator generates mini-batches, where each mini-batch is of the form
+            of a list of numpy arrays:
+
+        >>> def make_iterator(X, y):
+        ...     def iter_minibatches(batchsize, shuffle_rng=None):
+        ...         indices = np.arange(X.shape[0])
+        ...         if shuffle_rng is not None:
+        ...             shuffle_rng.shuffle(indices)
+        ...         for i in range(0, indices.shape[0], batchsize):
+        ...             batch_ndx = indices[i:i+batchsize]
+        ...             batch_X = X[batch_ndx]
+        ...             batch_y = y[batch_ndx]
+        ...             yield [batch_X, batch_y]
+        ...     return iter_minibatches
+        >>> trainer.batch_loop(train_function, make_iterator(train_X, train_y),
+        ...                    batchsize=128, shuffle_rng=rng)
+
+        :param fn: the function to call on each mini-batch of the form `function(batchX, batchY, ...) -> [outA, outB, ...]`
+        :param data: the data to draw mini-batches from
+        :param batchsize: the number of samples per mini-batch
+        :param shuffle_rng: a random number generator used to shuffle samples, or `None` to process in-order
+        :param on_complete_batch: [optional] a callback of the form `function()` to invoke after completing each mini-batch
+        :param prepend_args: [optional] arguments to prepend to the arguments passed to `fn`
+        :return: The sum of the results of the function `fn` divided by the number of samples processed, e.g.
+            `[sum(outA_per_batch) / n_samples, sum(outB_per_batch) / n_samples, ...]`
+        """
         # Accumulator for results and number of samples
         results_accum = None
         n_samples_accum = 0
 
         # Train on each batch
-        for batch in self.batch_iterator(data, batchsize, shuffle, shuffle_rng=shuffle_rng):
+        for batch in self.batch_iterator(data, batchsize, shuffle_rng=shuffle_rng):
             # Aply batch transformation function
             if self.batch_xform_fn is not None:
                 batch = self.batch_xform_fn(batch)

@@ -105,26 +105,78 @@ class ImageWindowExtractor (object):
             windows[i,:,:,:] = win
         return windows
 
-    def iterate_minibatches(self, batchsize, shuffle=False):
+
+    def iterate_minibatches(self, batchsize, shuffle_rng=None):
+        """
+        A minibatch iterator, can be passed to the methods in trainer as a dataset, e.g.:
+
+        >>> trainer.train(image_window_extractor.iterate_minibatches, None, None, batchsize=128)
+
+        or
+
+        >>> trainer.batch_loop(training_function, image_window_extractor.iterate_minibatches, batchsize=128)
+
+        or
+
+        >>> trainer.batch_iterator(image_window_extractor.iterate_minibatches, batchsize=128)
+
+        Please note that this method will extract windows from one set of images. This is often not too useful
+        as you frequently need more than one e.g. an input set and a target set. For this, see the
+        `ImageWindowExtractor.multiplexed_minibatch_iterator` method.
+
+        :param batchsize: the mini-batch size
+        :param shuffle_rng: [optional] a random number generator used to shuffle the order in which image windows
+        are extracted
+        :return: an iterator that yields mini-batch tuples of the form `(batch_of_windows, )`
+        """
         indices = np.arange(self.N)
-        if shuffle:
-            np.random.shuffle(indices)
+        if shuffle_rng is not None:
+            shuffle_rng.shuffle(indices)
         for start_idx in range(0, self.N - batchsize + 1, batchsize):
-            yield self.get_windows(indices[start_idx:start_idx + batchsize])
+            yield (self.get_windows(indices[start_idx:start_idx + batchsize]), )
 
 
     @staticmethod
-    def iterate_minibatches_multi(data, batchsize, shuffle=False):
-        d0 = data[0]
-        for d1 in data[1:]:
-            assert d1.N == data[0].N
-        indices = np.arange(data[0].N)
-        if shuffle:
-            np.random.shuffle(indices)
-        for start_idx in range(0, d0.N, batchsize):
-            batch_indices = indices[start_idx:start_idx + batchsize]
-            yield [d.get_windows(batch_indices) for d in data]
+    def multiplexed_minibatch_iterator(*image_window_extractors):
+        """
+        Create a mini-batch iterator that yields mini-batches of windows extracted from a sequence if
+        `ImageWindowExtractor` instances.
+        A minibatch iterator, can be passed to the methods in trainer as a dataset, e.g.:
 
+        >>> input_images = ImageWindowExtractor(...)
+        >>> target_images = ImageWindowExtractor(...)
+        >>> batch_iterator = ImageWindowExtractor.multiplexed_minibatch_iterator(input_images, target_images)
+
+        Now pass to `Trainer` methods:
+
+        >>> trainer.train(batch_iterator, None, None, batchsize=128)
+
+        or
+
+        >>> trainer.batch_loop(training_function, batch_iterator, batchsize=128)
+
+        or
+
+        >>> trainer.batch_iterator(batch_iterator, batchsize=128)
+
+        :param batchsize: the mini-batch size
+        :param shuffle_rng: [optional] a random number generator used to shuffle the order in which image windows
+        are extracted
+        :return: an iterator that yields mini-batch
+        """
+
+        def window_batch_iterator(batchsize, shuffle_rng=None):
+            d0 = image_window_extractors[0]
+            for d1 in image_window_extractors[1:]:
+                assert d1.N == image_window_extractors[0].N
+            indices = np.arange(image_window_extractors[0].N)
+            if shuffle_rng is not None:
+                shuffle_rng.shuffle(indices)
+            for start_idx in range(0, d0.N, batchsize):
+                batch_indices = indices[start_idx:start_idx + batchsize]
+                yield [d.get_windows(batch_indices) for d in image_window_extractors]
+
+        return window_batch_iterator
 
 
 class ImageWindowAssembler (object):
