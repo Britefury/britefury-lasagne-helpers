@@ -441,8 +441,7 @@ class Trainer (object):
             # TRAIN
             # Log start of training
             if self.verbosity == VERBOSITY_BATCH:
-                self._log('[')
-                on_train_batch = lambda: self._log_train_batch(epoch)
+                on_train_batch = lambda batch_index: self._log_batch('train', epoch, batch_index)
             else:
                 on_train_batch = None
 
@@ -450,6 +449,8 @@ class Trainer (object):
             train_epoch_args = (epoch,) if self.train_pass_epoch_number else None
             train_results = self.batch_loop(self.train_batch_fn, train_set, batchsize, self.shuffle_rng,
                                              on_complete_batch=on_train_batch, prepend_args=train_epoch_args)
+            if self.verbosity == VERBOSITY_BATCH:
+                self._log('\r')
 
             if self.train_epoch_results_check_fn is not None:
                 reason = self.train_epoch_results_check_fn(epoch, train_results)
@@ -465,9 +466,6 @@ class Trainer (object):
 
                     raise TrainingFailedException(epoch, reason, params_restored)
 
-            # Log the end of training
-            if self.verbosity == VERBOSITY_BATCH:
-                self._log(']\n')
 
 
             validated = False
@@ -476,7 +474,16 @@ class Trainer (object):
             # VALIDATION
             if val_set is not None and self._should_validate(epoch):
                 validated = True
-                validation_results = self.batch_loop(self.eval_batch_fn, val_set, batchsize, None)
+
+                if self.verbosity == VERBOSITY_BATCH:
+                    on_val_batch = lambda batch_index: self._log_batch('val', epoch, batch_index)
+                else:
+                    on_val_batch = None
+
+                validation_results = self.batch_loop(self.eval_batch_fn, val_set, batchsize,
+                                                     on_complete_batch=on_val_batch)
+                if self.verbosity == VERBOSITY_BATCH:
+                    self._log('\r')
 
                 if best_validation_results is None or \
                         self.validation_improved_fn(validation_results, best_validation_results):
@@ -495,7 +502,14 @@ class Trainer (object):
 
                     if test_set is not None:
                         tested = True
-                        test_results = self.batch_loop(self.eval_batch_fn, test_set, batchsize, None)
+                        if self.verbosity == VERBOSITY_BATCH:
+                            on_test_batch = lambda batch_index: self._log_batch('test', epoch, batch_index)
+                        else:
+                            on_test_batch = None
+                        test_results = self.batch_loop(self.eval_batch_fn, test_set, batchsize,
+                                                       on_complete_batch=on_test_batch)
+                        if self.verbosity == VERBOSITY_BATCH:
+                            self._log('\r')
             else:
                 validation_results = None
 
@@ -565,9 +579,9 @@ class Trainer (object):
         log_stream.write(text)
         log_stream.flush()
 
-    def _log_train_batch(self, epoch):
+    def _log_batch(self, task, epoch, batch_index):
         if self.verbosity == VERBOSITY_BATCH:
-            self._log('.')
+            self._log('\r[{} {}]'.format(task, batch_index))
 
     def _should_validate(self, epoch):
         return self.validation_interval is None  or  epoch % self.validation_interval == 0
@@ -711,7 +725,7 @@ class Trainer (object):
         n_samples_accum = 0
 
         # Train on each batch
-        for batch in self.batch_iterator(data, batchsize, shuffle_rng=shuffle_rng):
+        for batch_i, batch in enumerate(self.batch_iterator(data, batchsize, shuffle_rng=shuffle_rng)):
             # Aply batch transformation function
             if self.batch_xform_fn is not None:
                 batch = self.batch_xform_fn(batch)
@@ -743,7 +757,7 @@ class Trainer (object):
             n_samples_accum += batch_N
 
             if on_complete_batch is not None:
-                on_complete_batch()
+                on_complete_batch(batch_i)
 
         # Divide by the number of training examples used to compute mean
         if results_accum is not None:
