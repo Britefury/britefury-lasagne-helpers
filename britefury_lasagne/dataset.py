@@ -1,4 +1,16 @@
+import sys, os
 import numpy as np
+import six
+
+from . import config
+
+_DATA_DIR_NAME = 'datasets'
+
+DATA_DIR = os.path.join(config.get_data_dir_path(), _DATA_DIR_NAME)
+
+
+def download_data(filename, source_url):
+    return config.download(os.path.join(DATA_DIR, filename), source_url)
 
 
 def coerce_rng(rng):
@@ -14,7 +26,7 @@ def coerce_rng(rng):
     """
     if rng is None:
         return np.random.RandomState(12345)
-    elif isinstance(rng, (int, long)):
+    elif isinstance(rng, six.integer_types):
         return np.random.RandomState(rng)
     elif isinstance(rng, np.random.RandomState):
         return rng
@@ -39,7 +51,7 @@ def balanced_subset_indices(y, n_classes, n_samples, shuffle=False, rng=None):
     :param rng: a random number generator used for shuffling, see `coerce_rng`
     :return: an array of integer indices
     """
-    if isinstance(n_samples, (int, long)):
+    if isinstance(n_samples, six.integer_types):
         n_per_class = n_samples // n_classes
     elif isinstance(n_samples, float):
         if n_samples < 0.0 or n_samples > 1.0:

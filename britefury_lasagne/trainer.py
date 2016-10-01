@@ -1,9 +1,12 @@
-import sys, time, re
+import sys, time, re, six, itertools
 import numpy as np
 import lasagne
-from fuel.schemes import ShuffledScheme, SequentialScheme
-from fuel.streams import DataStream
-from fuel.datasets import Dataset
+try:
+    from fuel.schemes import ShuffledScheme, SequentialScheme
+    from fuel.streams import DataStream
+    from fuel.datasets import Dataset
+except ImportError:
+    ShuffledScheme = SequentialScheme = DataStream = Dataset = NotImplemented
 
 
 VERBOSITY_NONE = None
@@ -12,14 +15,44 @@ VERBOSITY_EPOCH = 'epoch'
 VERBOSITY_BATCH = 'batch'
 
 
-def load_model(path, network):
+def get_network_params(layer, updates=None):
+    layer_params = lasagne.layers.get_all_params(layer)
+
+    if updates is not None:
+        if isinstance(updates, dict):
+            params = list(updates.keys())
+        elif isinstance(updates, (list, tuple)):
+            params = [upd[0] for upd in updates]
+        else:
+            raise TypeError('updates should be a dict mapping parameter to update expression '
+                            'or a sequence of tuples of (parameter, update_expression) pairs')
+
+        for p in params:
+            if p not in layer_params:
+                layer_params.append(p)
+
+    return layer_params
+
+
+def get_param_values(params):
+    return [p.get_value() for p in params]
+
+def set_param_values(params, values):
+    for p, v in zip(params, values):
+        p.set_value(v)
+
+
+def load_model(path, network, updates=None):
     with np.load(path) as f:
         param_values = [f['arr_%d' % i] for i in range(len(f.files))]
 
-    lasagne.layers.set_all_param_values(network, param_values)
+    params = get_network_params(network, updates=updates)
+    set_param_values(params, param_values)
 
-def save_model(path, network):
-    np.savez(path, *lasagne.layers.get_all_param_values(network))
+def save_model(path, network, updates=None):
+    params = get_network_params(network, updates=updates)
+    param_values = get_param_values(params)
+    np.savez(path, *param_values)
 
 
 def get_network_input_var(network):
@@ -40,30 +73,30 @@ def _is_sequence_of_arrays(dataset):
     return False
 
 
-def iterate_minibatches(data, batchsize, shuffle=False):
+def iterate_minibatches(data, batchsize, shuffle_rng=None):
     N = data[0].shape[0]
     for d1 in data[1:]:
         assert d1.shape[0] == N
-    if shuffle:
+    if shuffle_rng is not None:
         indices = np.arange(N)
-        np.random.shuffle(indices)
-    for start_idx in range(0, N, batchsize):
-        if shuffle:
+        shuffle_rng.shuffle(indices)
+        for start_idx in range(0, N, batchsize):
             excerpt = indices[start_idx:start_idx + batchsize]
-        else:
-            excerpt = slice(start_idx, start_idx + batchsize)
-        yield [d[excerpt] for d in data]
-
-
-def _default_epoch_log_fn(epoch_number, delta_time, train_results, val_results, test_results):
-    if val_results is None:
-        return 'Epoch {} ({:.2f}s): train {}'.format(epoch_number, delta_time, train_results)
-    elif test_results is None:
-        return 'Epoch {} ({:.2f}s): train {}, validation {}'.format(epoch_number, delta_time, train_results,
-                                                                    val_results)
+            yield [d[excerpt] for d in data]
     else:
-        return 'Epoch {} ({:.2f}s): train {}, validation {} test {}'.format(epoch_number, delta_time, train_results,
-                                                                            val_results, test_results)
+        for start_idx in range(0, N, batchsize):
+            yield [d[start_idx:start_idx+batchsize] for d in data]
+
+
+def _default_epoch_log_fn(epoch_number, delta_time, train_str, val_str, test_str):
+    if val_str is None:
+        return 'Epoch {} ({:.2f}s): train {}'.format(epoch_number, delta_time, train_str)
+    elif test_str is None:
+        return 'Epoch {} ({:.2f}s): train {}, validation {}'.format(epoch_number, delta_time, train_str,
+                                                                    val_str)
+    else:
+        return 'Epoch {} ({:.2f}s): train {}, validation {} test {}'.format(epoch_number, delta_time, train_str,
+                                                                            val_str, test_str)
 
 
 class TrainingFailedException (Exception):
@@ -111,11 +144,15 @@ class Trainer (object):
         self.fuel_stream_xform_fn = None
         self.batch_xform_fn = None
 
+        self.shuffle_rng = lasagne.random.get_rng()
+
         self.train_batch_fn = None
+        self.train_log_fn = None
         self.train_epoch_results_check_fn = None
         self.train_pass_epoch_number = False
 
         self.eval_batch_fn = None
+        self.eval_log_fn = None
         self.validation_improved_fn = lambda x, y: x[0] < y[0]
         self.validation_interval = None
 
@@ -136,7 +173,15 @@ class Trainer (object):
         self.set_state_fn = None
 
 
-    def train_with(self, train_batch_fn, train_epoch_results_check_fn=None, pass_epoch_number=False):
+    def set_shuffle_randomstate(self, shuffle_rng):
+        """
+        Set the RandomState used for shuffling samples during training
+
+        :param shuffle_rng: a `numpy.random.RandomState` instance
+        """
+        self.shuffle_rng = shuffle_rng
+
+    def train_with(self, train_batch_fn, train_log_fn=None, train_epoch_results_check_fn=None, pass_epoch_number=False):
         """
         Set the batch training function. This method *MUST* be called before attempting to use the
         trainer.
@@ -147,6 +192,8 @@ class Trainer (object):
         represent loss/error rates/etc, or `None`. Note that the training function results should
         represent the *sum* of the loss/error rate for that batch as the values will be accumulated
         and divided by the total number of training samples after all mini-batches has been processed.
+        :param train_log_fn: [optional] a function of the form `fn(train_results) -> str` that generates
+        log output for the training results
         :param train_epoch_results_check_fn: [optional] a function of the form
         `f(epoch, train_epoch_results) -> error_reason` that is invoked to check the results returned by
         `train_batch_fn` accumulated during the epoch; if no training failure is detected, it should
@@ -160,11 +207,12 @@ class Trainer (object):
         :return: `self`
         """
         self.train_batch_fn = train_batch_fn
+        self.train_log_fn = train_log_fn
         self.train_epoch_results_check_fn = train_epoch_results_check_fn
         self.train_pass_epoch_number = pass_epoch_number
         return self
 
-    def evaluate_with(self, eval_batch_fn, validation_improved_fn=0):
+    def evaluate_with(self, eval_batch_fn, eval_log_fn=None, validation_improved_fn=0):
         """
         Set the batch validation/test function.
 
@@ -176,6 +224,8 @@ class Trainer (object):
         total number of training samples at the end. Note that for the purpose of detecting improvements
         in validation, *better* results should have *lower* values, or use the `validation_score_fn`
         to provide a function that negates/inverts the score.
+        :param eval_log_fn: [optional] a function of the form `fn(eval_results) -> str` that generates
+        log output for evaluation results
         :param validation_improved_fn: Either an integer index or a callable; if an index then
         improvement is detected via `val_results_new[validation_improved_fn] <
         val_best_so_far[validation_improved_fn]`, if a callable then the
@@ -183,7 +233,8 @@ class Trainer (object):
         :return: `self`
         """
         self.eval_batch_fn = eval_batch_fn
-        if isinstance(validation_improved_fn, (int, long)):
+        self.eval_log_fn = eval_log_fn
+        if isinstance(validation_improved_fn, six.integer_types):
             self.validation_improved_fn = lambda x, y: x[validation_improved_fn] < y[validation_improved_fn]
         elif callable(validation_improved_fn):
             self.validation_improved_fn = validation_improved_fn
@@ -238,8 +289,10 @@ class Trainer (object):
         a single line report is produced for each epoch. If `VERBOSITY_BATCH` then in addition
         to a single line per epoch
         :param epoch_log_fn: a function that creates a log entry to display an epoch result of the form
-        `fn(epoch_number, delta_time, train_results, val_results, test_results) -> str` that
-        generates a string describing the epoch training results
+        `fn(epoch_index, delta_time, train_str, val_str, test_str) -> str` that
+        generates a string describing the epoch training results, where `train_str`, `val_str` and
+        `test_str` are strings or `None`, that result from invoking the `train_log_fn` or
+        `eval_log_fn` functions passed to the `train_with` and `eval_with` methods.
         :param log_stream: a file-like object to which progress is to be written.
         :param final_result: if True, log a final result
         :return: `self`
@@ -250,45 +303,28 @@ class Trainer (object):
         self.log_final_result = final_result
         return self
 
-    def retain_best_scoring_state_of_updates(self, updates):
+    def retain_best_scoring_state_of_network(self, layer, updates=None):
         """
-        Provide an updates dict or tuple list that is passed as the `updates` parameter to
-        `theano.function` and often generated by functions from `lasagne.updates` that is
-        used to acquire parameters whose values are saved and restored in order to
-        save and restore the network; see the `keep_best_scoring_state` method
-        :param layer: a `lasagne.layers.Layer`.
-        """
-        if isinstance(updates, dict):
-            params = list(updates.keys())
-        elif isinstance(updates, (list, tuple)):
-            params = [upd[0] for upd in updates]
-        else:
-            raise TypeError('updates should be a dict mapping parameter to update expression '
-                            'or a sequence of tuples of parameter, update expression pairs')
-
-        def get_state():
-            return [p.get_value() for p in params]
-
-        def set_state(state):
-            for p, v in zip(params, state):
-                p.set_value(v)
-
-        self.retain_best_scoring_state(get_state, set_state)
-        return self
-
-    def retain_best_scoring_state_of_network(self, layer):
-        """
-        Provide a lasagne layer (`lasagne.layers.Layer`) that is used to saving and restoring the
-        state of the network; see the `keep_best_scoring_state` method
+        Provide a lasagne layer (`lasagne.layers.Layer`) and an optional updates dict/list that is used for
+        saving and restoring the state of the network; see the `keep_best_scoring_state` method
 
         NOTE: the `retain_best_scoring_state_of_updates` method is preferred since the state
         of additional variables created by the update function are also saved and restored by
         this method.
 
-        :param layer: a `lasagne.layers.Layer`.
+        :param layer: a `lasagne.layers.Layer` or list of layers that are the end-points of the network
+        :param updates: [optional] an updates dict or tuple list that is passed as the `updates` parameter to
+        `theano.function` and often generated by functions from `lasagne.updates`
         """
-        get_state = lambda: lasagne.layers.get_all_param_values(layer, trainable=True)
-        set_state = lambda state: lasagne.layers.set_all_param_values(layer, state, trainable=True)
+        network_params = get_network_params(layer, updates=updates)
+
+        def get_state():
+            return [p.get_value() for p in network_params]
+
+        def set_state(state):
+            for p, v in zip(network_params, state):
+                p.set_value(v)
+
         self.retain_best_scoring_state(get_state, set_state)
         return self
 
@@ -321,10 +357,46 @@ class Trainer (object):
         """
         Run the training loop.
 
+        The datasets (`train_set`, `val_set` and `test_set`) must take the form of one of:
+        - a list of numpy arrays - one for each variable (input/target/etc) - where each array
+            contains an entry for each sample in the complete dataset:
+
+        >>> train_X = np.random.normal(size=(5000,3,24,24)) # 5000 samples, 3 channel 24x24 images
+        >>> train_y = np.random.randint(0, 5, size=(5000,)) # 5000 samples, classes
+        >>> # similar for val_X, val_y, test_X, test_y
+        >>> trainer.train([train_X, train_y], [val_X, val_y], [test_X, test_y], batchsize=128)
+
+        - a Fuel Dataset instance:
+
+        >>> train_dataset = load_fuel_dataset
+        >>> # similar for val_dataset and test_dataset
+        >>> trainer.train(train_dataset, val_dataset, test_dataset, batchsize=128)
+
+        - a function of the form `fn(batchsize, shuffle_rng=None) -> iterator` that generates an
+            iterator, where the iterator generates mini-batches, where each mini-batch is of the form
+            of a list of numpy arrays:
+
+        >>> def make_iterator(X, y):
+        ...     def iter_minibatches(batchsize, shuffle_rng=None):
+        ...         indices = np.arange(X.shape[0])
+        ...         if shuffle_rng is not None:
+        ...             shuffle_rng.shuffle(indices)
+        ...         for i in range(0, indices.shape[0], batchsize):
+        ...             batch_ndx = indices[i:i+batchsize]
+        ...             batch_X = X[batch_ndx]
+        ...             batch_y = y[batch_ndx]
+        ...             yield [batch_X, batch_y]
+        ...     return iter_minibatches
+        >>> trainer.train(make_iterator(train_X, train_y),
+        ...               make_iterator(val_X, val_y),
+        ...               make_iterator(test_X, test_y), batchsize=128)
+
         :param train_set: the training set
         :param val_set: the validation set, or `None`
         :param test_set: the test set, or `None`
         :param batchsize: the mini-batch size
+        :param shuffle_rng: [optional] a `np.random.RandomState` instance used for shuffling sample order
+        during training
         :return: a `TrainingResults` instance that provides the per-epoch history of results of
         training, validation and testing, along with the epoch that gave the best validation score
         and the best validation and final test results.
@@ -346,6 +418,8 @@ class Trainer (object):
         else:
             state_at_start = None
 
+        validation_results = None
+        best_train_results = None
         best_validation_results = None
         best_epoch = None
         best_state = None
@@ -367,15 +441,16 @@ class Trainer (object):
             # TRAIN
             # Log start of training
             if self.verbosity == VERBOSITY_BATCH:
-                self._log('[')
-                on_train_batch = lambda: self._log_train_batch(epoch)
+                on_train_batch = lambda batch_index: self._log_batch('train', epoch, batch_index)
             else:
                 on_train_batch = None
 
             # Train
             train_epoch_args = (epoch,) if self.train_pass_epoch_number else None
-            train_results = self._batch_loop(self.train_batch_fn, train_set, batchsize, shuffle=True,
+            train_results = self.batch_loop(self.train_batch_fn, train_set, batchsize, self.shuffle_rng,
                                              on_complete_batch=on_train_batch, prepend_args=train_epoch_args)
+            if self.verbosity == VERBOSITY_BATCH:
+                self._log('\r')
 
             if self.train_epoch_results_check_fn is not None:
                 reason = self.train_epoch_results_check_fn(epoch, train_results)
@@ -391,9 +466,6 @@ class Trainer (object):
 
                     raise TrainingFailedException(epoch, reason, params_restored)
 
-            # Log the end of training
-            if self.verbosity == VERBOSITY_BATCH:
-                self._log(']\n')
 
 
             validated = False
@@ -402,14 +474,23 @@ class Trainer (object):
             # VALIDATION
             if val_set is not None and self._should_validate(epoch):
                 validated = True
-                validation_results = self._batch_loop(self.eval_batch_fn, val_set, batchsize,
-                                                      shuffle=False)
+
+                if self.verbosity == VERBOSITY_BATCH:
+                    on_val_batch = lambda batch_index: self._log_batch('val', epoch, batch_index)
+                else:
+                    on_val_batch = None
+
+                validation_results = self.batch_loop(self.eval_batch_fn, val_set, batchsize,
+                                                     on_complete_batch=on_val_batch)
+                if self.verbosity == VERBOSITY_BATCH:
+                    self._log('\r')
 
                 if best_validation_results is None or \
                         self.validation_improved_fn(validation_results, best_validation_results):
                     validation_improved = True
 
                     # Validation score improved
+                    best_train_results = train_results
                     best_validation_results = validation_results
                     best_epoch = epoch
                     best_state = self._save_state()
@@ -421,15 +502,20 @@ class Trainer (object):
 
                     if test_set is not None:
                         tested = True
-                        test_results = self._batch_loop(self.eval_batch_fn, test_set, batchsize,
-                                                        shuffle=False)
+                        if self.verbosity == VERBOSITY_BATCH:
+                            on_test_batch = lambda batch_index: self._log_batch('test', epoch, batch_index)
+                        else:
+                            on_test_batch = None
+                        test_results = self.batch_loop(self.eval_batch_fn, test_set, batchsize,
+                                                       on_complete_batch=on_test_batch)
+                        if self.verbosity == VERBOSITY_BATCH:
+                            self._log('\r')
             else:
                 validation_results = None
 
             if not tested and test_set is not None and val_set is None:
                 tested = True
-                test_results = self._batch_loop(self.eval_batch_fn, test_set, batchsize,
-                                                shuffle=False)
+                test_results = self.batch_loop(self.eval_batch_fn, test_set, batchsize, None)
 
             if self.verbosity == VERBOSITY_BATCH or self.verbosity == VERBOSITY_EPOCH:
                 self._log_epoch_results(epoch, time.time() - epoch_start_time, train_results,
@@ -459,11 +545,22 @@ class Trainer (object):
         if state_saved:
             self._restore_state(best_state)
 
-        if self.verbosity != VERBOSITY_BATCH and self.verbosity != VERBOSITY_EPOCH and self.log_final_result:
-            final_train_results = all_train_results[-1] if len(all_train_results) > 0 else None
-            self._log("Final result:\n")
-            self._log_epoch_results(epoch, train_end_time - train_start_time, final_train_results,
-                                    best_validation_results, test_results)
+        if self.log_final_result:
+            if self.verbosity == VERBOSITY_MINIMAL:
+                self._log('\n')
+            if state_saved and self.get_state_fn is not None:
+                self._log("Final result:\n")
+                self._log_epoch_results(best_epoch, train_end_time - train_start_time, best_train_results,
+                                        best_validation_results, test_results)
+            else:
+                final_train_results = all_train_results[-1] if len(all_train_results) > 0 else None
+                final_test_results = test_results if best_epoch == epoch - 1 else None
+                self._log("Best result:\n")
+                self._log_epoch_results(best_epoch, train_end_time - train_start_time, best_train_results,
+                                        best_validation_results, test_results)
+                self._log("Final result:\n")
+                self._log_epoch_results(epoch - 1, train_end_time - train_start_time, final_train_results,
+                                        validation_results, final_test_results)
 
 
         return TrainingResults(
@@ -482,16 +579,26 @@ class Trainer (object):
         log_stream.write(text)
         log_stream.flush()
 
-    def _log_train_batch(self, epoch):
+    def _log_batch(self, task, epoch, batch_index):
         if self.verbosity == VERBOSITY_BATCH:
-            self._log('.')
+            self._log('\r[{} {}]'.format(task, batch_index))
 
     def _should_validate(self, epoch):
         return self.validation_interval is None  or  epoch % self.validation_interval == 0
 
     def _log_epoch_results(self, epoch, delta_time, train_results, val_results, test_results):
+        train_str = val_str = test_str = None
+        if train_results is not None:
+            train_str = self.train_log_fn(train_results) if self.train_log_fn is not None \
+                else '{}'.format(train_results)
+        if val_results is not None:
+            val_str = self.eval_log_fn(val_results) if self.eval_log_fn is not None \
+                else '{}'.format(val_results)
+        if test_results is not None:
+            test_str = self.eval_log_fn(test_results) if self.eval_log_fn is not None \
+                else '{}'.format(test_results)
         epoch_log_fn = self.epoch_log_fn or _default_epoch_log_fn
-        self._log(epoch_log_fn(epoch, delta_time, train_results, val_results, test_results) + '\n')
+        self._log(epoch_log_fn(epoch, delta_time, train_str, val_str, test_str) + '\n')
 
     def _save_state(self):
         if self.get_state_fn is not None:
@@ -507,10 +614,51 @@ class Trainer (object):
             return False
 
 
-    def batch_iterator(self, dataset, batchsize, shuffle=False):
-        if isinstance(dataset, Dataset):
-            if shuffle:
-                train_scheme = ShuffledScheme(examples=dataset.num_examples, batch_size=batchsize)
+    def batch_iterator(self, dataset, batchsize, shuffle_rng=None):
+        """
+        Create an iterator that will iterate over the data in `dataset` in mini-batches consisting of `batchsize`
+        samples, shuffled using the random number generate `shuffle_rng` if supplied or in-order if not.
+
+        The data in `dataset` must take the form of:
+
+        - a list of numpy arrays - one for each variable (input/target/etc) - where each array
+            contains an entry for each sample in the complete dataset:
+
+        >>> train_X = np.random.normal(size=(5000,3,24,24)) # 5000 samples, 3 channel 24x24 images
+        >>> train_y = np.random.randint(0, 5, size=(5000,)) # 5000 samples, classes
+        >>> trainer.batch_iterator([train_X, train_y], batchsize=128, shuffle_rng=rng)
+
+        - a Fuel Dataset instance:
+
+        >>> train_dataset = load_fuel_dataset
+        >>> trainer.batch_iterator(train_dataset, batchsize=128, shuffle_rng=rng)
+
+        - a function of the form `fn(batchsize, shuffle_rng=None) -> iterator` that generates an
+            iterator, where the iterator generates mini-batches, where each mini-batch is of the form
+            of a list of numpy arrays:
+
+        >>> def make_iterator(X, y):
+        ...     def iter_minibatches(batchsize, shuffle_rng=None):
+        ...         indices = np.arange(X.shape[0])
+        ...         if shuffle_rng is not None:
+        ...             shuffle_rng.shuffle(indices)
+        ...         for i in range(0, indices.shape[0], batchsize):
+        ...             batch_ndx = indices[i:i+batchsize]
+        ...             batch_X = X[batch_ndx]
+        ...             batch_y = y[batch_ndx]
+        ...             yield [batch_X, batch_y]
+        ...     return iter_minibatches
+        >>> trainer.batch_iterator(make_iterator(train_X, train_y), batchsize=128, shuffle_rng=rng)
+
+        :param dataset: the data to draw mini-batches from.
+        :param batchsize: the mini-batch size
+        :param shuffle_rng: [optional] a random number generator used to to shuffle the order of samples before
+            building mini-batches
+        :return: an iterator
+        """
+        if Dataset is not NotImplemented and isinstance(dataset, Dataset):
+            if shuffle_rng is not None:
+                train_scheme = ShuffledScheme(examples=dataset.num_examples, batch_size=batchsize, rng=shuffle_rng)
             else:
                 train_scheme = SequentialScheme(examples=dataset.num_examples, batch_size=batchsize)
             # Use `DataStream.default_stream`, otherwise the default transformers defined by the dataset *wont*
@@ -520,20 +668,64 @@ class Trainer (object):
                 stream = self.fuel_stream_xform_fn(stream)
             return stream.get_epoch_iterator()
         elif _is_sequence_of_arrays(dataset):
-            return iterate_minibatches(dataset, batchsize, shuffle=shuffle)
+            return iterate_minibatches(dataset, batchsize, shuffle_rng=shuffle_rng)
         elif callable(dataset):
-            return dataset(batchsize, shuffle=shuffle)
+            return dataset(batchsize, shuffle_rng=shuffle_rng)
         else:
             raise TypeError('dataset should be a fuel Dataset instance or a list of arrays')
 
 
-    def _batch_loop(self, fn, data, batchsize, shuffle=False, on_complete_batch=None, prepend_args=None):
+    def batch_loop(self, fn, data, batchsize, shuffle_rng=None, on_complete_batch=None, prepend_args=None):
+        """
+        Split data into mini-batches and apply a function to each mini-batch. The function is usually a
+        training or evaluation function.
+
+        The dataset in `data` must take one of the following forms:
+        - a list of numpy arrays - one for each variable (input/target/etc) - where each array
+            contains an entry for each sample in the complete dataset:
+
+        >>> train_X = np.random.normal(size=(5000,3,24,24)) # 5000 samples, 3 channel 24x24 images
+        >>> train_y = np.random.randint(0, 5, size=(5000,)) # 5000 samples, classes
+        >>> trainer.batch_loop(train_function, [train_X, train_y], batchsize=128, shuffle_rng=rng)
+
+        - a Fuel Dataset instance:
+
+        >>> train_dataset = load_fuel_dataset
+        >>> trainer.batch_loop(train_function, train_dataset, batchsize=128, shuffle_rng=rng)
+
+        - a function of the form `fn(batchsize, shuffle_rng=None) -> iterator` that generates an
+            iterator, where the iterator generates mini-batches, where each mini-batch is of the form
+            of a list of numpy arrays:
+
+        >>> def make_iterator(X, y):
+        ...     def iter_minibatches(batchsize, shuffle_rng=None):
+        ...         indices = np.arange(X.shape[0])
+        ...         if shuffle_rng is not None:
+        ...             shuffle_rng.shuffle(indices)
+        ...         for i in range(0, indices.shape[0], batchsize):
+        ...             batch_ndx = indices[i:i+batchsize]
+        ...             batch_X = X[batch_ndx]
+        ...             batch_y = y[batch_ndx]
+        ...             yield [batch_X, batch_y]
+        ...     return iter_minibatches
+        >>> trainer.batch_loop(train_function, make_iterator(train_X, train_y),
+        ...                    batchsize=128, shuffle_rng=rng)
+
+        :param fn: the function to call on each mini-batch of the form `function(batchX, batchY, ...) -> [outA, outB, ...]`
+        :param data: the data to draw mini-batches from
+        :param batchsize: the number of samples per mini-batch
+        :param shuffle_rng: a random number generator used to shuffle samples, or `None` to process in-order
+        :param on_complete_batch: [optional] a callback of the form `function()` to invoke after completing each mini-batch
+        :param prepend_args: [optional] arguments to prepend to the arguments passed to `fn`
+        :return: The sum of the results of the function `fn` divided by the number of samples processed, e.g.
+            `[sum(outA_per_batch) / n_samples, sum(outB_per_batch) / n_samples, ...]`
+        """
         # Accumulator for results and number of samples
         results_accum = None
         n_samples_accum = 0
 
         # Train on each batch
-        for batch in self.batch_iterator(data, batchsize, shuffle=shuffle):
+        for batch_i, batch in enumerate(self.batch_iterator(data, batchsize, shuffle_rng=shuffle_rng)):
             # Aply batch transformation function
             if self.batch_xform_fn is not None:
                 batch = self.batch_xform_fn(batch)
@@ -565,7 +757,7 @@ class Trainer (object):
             n_samples_accum += batch_N
 
             if on_complete_batch is not None:
-                on_complete_batch()
+                on_complete_batch(batch_i)
 
         # Divide by the number of training examples used to compute mean
         if results_accum is not None:
@@ -574,7 +766,7 @@ class Trainer (object):
         return results_accum
 
 
-import unittest, cStringIO
+import unittest
 
 class Test_Trainer (unittest.TestCase):
     class TrainFunction (object):
@@ -608,7 +800,7 @@ class Test_Trainer (unittest.TestCase):
             if self.results is None:
                 return None
             else:
-                return [r*batch_N for r in self.results[i/self.result_repeat]]
+                return [r*batch_N for r in self.results[i//self.result_repeat]]
 
 
 
@@ -619,7 +811,7 @@ class Test_Trainer (unittest.TestCase):
 
 
     def test_no_eval_fn(self):
-        log = cStringIO.StringIO()
+        log = six.moves.cStringIO()
         train_fn = self.TrainFunction()
 
         trainer = Trainer()
@@ -632,7 +824,7 @@ class Test_Trainer (unittest.TestCase):
 
 
     def test_train(self):
-        log = cStringIO.StringIO()
+        log = six.moves.cStringIO()
         train_fn = self.TrainFunction()
 
         trainer = Trainer()
@@ -659,8 +851,8 @@ class Test_Trainer (unittest.TestCase):
 
 
     def test_validate_with(self):
-        log = cStringIO.StringIO()
-        val_out = [[i] for i in xrange(200)]
+        log = six.moves.cStringIO()
+        val_out = [[i] for i in range(200)]
         train_fn = self.TrainFunction()
         eval_fn = self.TrainFunction(val_out)
 
@@ -681,9 +873,10 @@ class Test_Trainer (unittest.TestCase):
 
 
     def test_validate_with_store_state(self):
-        log = cStringIO.StringIO()
-        train_fn = self.TrainFunction()
-        eval_fn = self.TrainFunction([[i] for i in xrange(200)])
+        log = six.moves.cStringIO()
+        train_fn = self.TrainFunction(states=np.arange(1000,3005,5))
+        eval_fn = self.TrainFunction([[i] for i in range(200, -1, -2)] +
+                                     [[i] for i in range(0, 200, 2)])
 
         trainer = Trainer()
         trainer.train_with(train_batch_fn=train_fn)
@@ -698,16 +891,17 @@ class Test_Trainer (unittest.TestCase):
         self.assertEqual(train_fn.count, 400)
         self.assertEqual(eval_fn.count, 200)
         self.assertEqual(log.getvalue(), '')
-        self.assertEqual(train_fn.state_get_count, 1)
+        self.assertEqual(train_fn.state_get_count, 101)
         self.assertEqual(train_fn.state_set_count, 1)
+        self.assertEqual(train_fn.current_state, 2005)
 
 
     def test_validation_interval(self):
-        log = cStringIO.StringIO()
+        log = six.moves.cStringIO()
         train_fn = self.TrainFunction()
         def on_eval():
             self.assertTrue(train_fn.count in range(1, 201, 10))
-        eval_fn = self.TrainFunction([[i] for i in xrange(200)], on_invoke=on_eval)
+        eval_fn = self.TrainFunction([[i] for i in range(200)], on_invoke=on_eval)
 
         trainer = Trainer()
         trainer.train_with(train_batch_fn=train_fn)
@@ -723,9 +917,9 @@ class Test_Trainer (unittest.TestCase):
 
 
     def test_validation_score_index(self):
-        val_output = zip(range(200), range(101,1,-1) + range(1,101,1))
+        val_output = zip(range(200), itertools.chain(range(101,1,-1), range(1,101,1)))
         val_output = [list(xs) for xs in val_output]
-        log = cStringIO.StringIO()
+        log = six.moves.cStringIO()
         train_fn = self.TrainFunction()
         eval_fn = self.TrainFunction(val_output)
 
@@ -746,9 +940,9 @@ class Test_Trainer (unittest.TestCase):
 
 
     def test_validation_score_fn(self):
-        val_output = zip(range(200), range(101,1,-1) + range(1,101,1))
+        val_output = zip(range(200), itertools.chain(range(101,1,-1), range(1,101,1)))
         val_output = [list(xs) for xs in val_output]
-        log = cStringIO.StringIO()
+        log = six.moves.cStringIO()
         train_fn = self.TrainFunction()
         eval_fn = self.TrainFunction(val_output)
 
@@ -769,9 +963,9 @@ class Test_Trainer (unittest.TestCase):
 
 
     def test_train_for_num_epochs(self):
-        val_output = zip(range(200), range(101,1,-1) + range(1,101,1))
+        val_output = zip(range(200), itertools.chain(range(101,1,-1), range(1,101,1)))
         val_output = [list(xs) for xs in val_output]
-        log = cStringIO.StringIO()
+        log = six.moves.cStringIO()
         train_fn = self.TrainFunction()
         eval_fn = self.TrainFunction(val_output)
 
@@ -792,9 +986,9 @@ class Test_Trainer (unittest.TestCase):
 
 
     def test_train_for_min_epochs(self):
-        val_output = zip(range(200), range(101,1,-1) + range(1,101,1))
+        val_output = zip(range(200), itertools.chain(range(101,1,-1), range(1,101,1)))
         val_output = [list(xs) for xs in val_output]
-        log = cStringIO.StringIO()
+        log = six.moves.cStringIO()
         train_fn = self.TrainFunction()
         eval_fn = self.TrainFunction(val_output)
 
@@ -815,9 +1009,9 @@ class Test_Trainer (unittest.TestCase):
 
 
     def test_train_for_val_improve_num_epochs(self):
-        val_output = zip(range(200), range(101,1,-1) + range(1,101,1))
+        val_output = zip(range(200), itertools.chain(range(101,1,-1), range(1,101,1)))
         val_output = [list(xs) for xs in val_output]
-        log = cStringIO.StringIO()
+        log = six.moves.cStringIO()
         train_fn = self.TrainFunction()
         eval_fn = self.TrainFunction(val_output)
 
@@ -838,9 +1032,9 @@ class Test_Trainer (unittest.TestCase):
 
 
     def test_train_for_val_improve_epochs_factor(self):
-        val_output = zip(range(200), range(75,0,-1) + range(0,125,1))
+        val_output = zip(range(200), itertools.chain(range(75,0,-1), range(0,125,1)))
         val_output = [list(xs) for xs in val_output]
-        log = cStringIO.StringIO()
+        log = six.moves.cStringIO()
         train_fn = self.TrainFunction()
         eval_fn = self.TrainFunction(val_output)
 
@@ -861,9 +1055,9 @@ class Test_Trainer (unittest.TestCase):
 
 
     def test_report_verbosity_none(self):
-        val_output = zip(range(200), range(75,0,-1) + range(0,125,1))
+        val_output = zip(range(200), itertools.chain(range(75,0,-1), range(0,125,1)))
         val_output = [list(xs) for xs in val_output]
-        log = cStringIO.StringIO()
+        log = six.moves.cStringIO()
         train_fn = self.TrainFunction()
         eval_fn = self.TrainFunction(val_output)
 
@@ -879,9 +1073,9 @@ class Test_Trainer (unittest.TestCase):
 
 
     def test_report_verbosity_minimal(self):
-        val_output = zip(range(200), range(75,0,-1) + range(0,125,1))
+        val_output = zip(range(200), itertools.chain(range(75,0,-1), range(0,125,1)))
         val_output = [list(xs) for xs in val_output]
-        log = cStringIO.StringIO()
+        log = six.moves.cStringIO()
         train_fn = self.TrainFunction()
         eval_fn = self.TrainFunction(val_output)
 
@@ -899,9 +1093,9 @@ class Test_Trainer (unittest.TestCase):
 
 
     def test_report_verbosity_epoch(self):
-        val_output = zip(range(200), range(75,0,-1) + range(0,125,1))
+        val_output = zip(range(200), itertools.chain(range(75,0,-1), range(0,125,1)))
         val_output = [list(xs) for xs in val_output]
-        log = cStringIO.StringIO()
+        log = six.moves.cStringIO()
         train_fn = self.TrainFunction(val_output)
         eval_fn = self.TrainFunction(val_output)
 
@@ -918,18 +1112,23 @@ class Test_Trainer (unittest.TestCase):
         log_lines = log.getvalue().split('\n')
         for i, line in enumerate(log_lines):
             if line.strip() != '':
-                pattern = re.escape('Epoch {0} ('.format(i)) + \
-                          r'[0-9]+\.[0-9]+s' + \
-                          re.escape('): train [{0}, {1}], validation [{0}, {1}]'.format(val_output[i][0], val_output[i][1]))
+                if sys.version_info[0] == 2:
+                    pattern = re.escape('Epoch {0} ('.format(i)) + \
+                              r'[0-9]+\.[0-9]+s' + \
+                              re.escape('): train [{0}L, {1}L], validation [{0}L, {1}L]'.format(val_output[i][0], val_output[i][1]))
+                else:
+                    pattern = re.escape('Epoch {0} ('.format(i)) + \
+                              r'[0-9]+\.[0-9]+s' + \
+                              re.escape('): train [{0}, {1}], validation [{0}, {1}]'.format(float(val_output[i][0]), float(val_output[i][1])))
                 match = re.match(pattern, line)
                 if match is None or match.end(0) != len(line):
-                    self.fail(msg=line)
+                    self.fail(msg='No match "{}" with pattern "{}"'.format(line, pattern))
 
 
     def test_report_verbosity_batch(self):
-        val_output = zip(range(200), range(75,0,-1) + range(0,125,1))
+        val_output = zip(range(200), itertools.chain(range(75,0,-1), range(0,125,1)))
         val_output = [list(xs) for xs in val_output]
-        log = cStringIO.StringIO()
+        log = six.moves.cStringIO()
         train_fn = self.TrainFunction()
         eval_fn = self.TrainFunction(val_output, result_repeat=4)
 
@@ -946,9 +1145,14 @@ class Test_Trainer (unittest.TestCase):
         log_lines = log.getvalue().split('\n')
         for i, (line_a, line_b) in enumerate(zip(log_lines[:-2:2], log_lines[1:-2:2])):
             if line_a.strip() != '' and line_b.strip() != '':
-                pattern_b = re.escape('Epoch {0} ('.format(i)) + \
-                          r'[0-9]+\.[0-9]+s' + \
-                          re.escape('): train None, validation [{0}L?, {1}L?]'.format(val_output[i][0], val_output[i][1]))
+                if sys.version_info[0] == 2:
+                    pattern_b = re.escape('Epoch {0} ('.format(i)) + \
+                              r'[0-9]+\.[0-9]+s' + \
+                              re.escape('): train None, validation [{0}L, {1}L]'.format(val_output[i][0], val_output[i][1]))
+                else:
+                    pattern_b = re.escape('Epoch {0} ('.format(i)) + \
+                              r'[0-9]+\.[0-9]+s' + \
+                              re.escape('): train None, validation [{0}, {1}]'.format(float(val_output[i][0]), float(val_output[i][1])))
                 self.assertEqual(line_a, '[....]')
                 match = re.match(pattern_b, line_b)
                 if match is None or match.end(0) != len(line_b):
@@ -957,19 +1161,25 @@ class Test_Trainer (unittest.TestCase):
 
     def test_report_epoch_log_fn(self):
         train_output = [[x] for x in range(200)]
-        val_output = zip(range(200), range(75,0,-1) + range(0,125,1))
+        val_output = zip(range(200), itertools.chain(range(75,0,-1), range(0,125,1)))
         val_output = [list(xs) for xs in val_output]
-        log = cStringIO.StringIO()
+        log = six.moves.cStringIO()
         train_fn = self.TrainFunction(train_output)
         eval_fn = self.TrainFunction(val_output)
 
-        def epoch_log_fn(epoch_number, delta_time, train_results, val_results, test_results):
-            return '{}: train: {}, val: {} {}'.format(epoch_number, train_results[0], val_results[0], val_results[1])
+        def train_log(train_results):
+            return '{}'.format(train_results[0])
+
+        def eval_log(val_results):
+            return '{} {}'.format(val_results[0], val_results[1])
+
+        def epoch_log_fn(epoch_index, delta_time, train_str, val_str, test_str):
+            return '{}: train: {}, val: {}'.format(epoch_index, train_str, val_str)
 
         trainer = Trainer()
-        trainer.train_with(train_batch_fn=train_fn)
+        trainer.train_with(train_batch_fn=train_fn, train_log_fn=train_log)
         trainer.train_for(num_epochs=200, min_epochs=65, val_improve_epochs_factor=2)
-        trainer.evaluate_with(eval_fn, validation_improved_fn=lambda a, b: a[1] < b[1])
+        trainer.evaluate_with(eval_fn, eval_log_fn=eval_log, validation_improved_fn=lambda a, b: a[1] < b[1])
         trainer.report(log_stream=log, verbosity=VERBOSITY_EPOCH, epoch_log_fn=epoch_log_fn, final_result=False)
 
         trainer.train([np.arange(5)], [np.arange(5)], None, 5)
@@ -979,5 +1189,8 @@ class Test_Trainer (unittest.TestCase):
         log_lines = log.getvalue().split('\n')
         for i, line in enumerate(log_lines):
             if line.strip() != '':
-                self.assertEqual(line, '{}: train: {}, val: {} {}'.format(i, train_output[i][0], val_output[i][0], val_output[i][1]))
+                if sys.version_info[0] == 2:
+                    self.assertEqual('{}: train: {}, val: {} {}'.format(i, train_output[i][0], val_output[i][0], val_output[i][1]), line)
+                else:
+                    self.assertEqual('{}: train: {}, val: {} {}'.format(i, float(train_output[i][0]), float(val_output[i][0]), float(val_output[i][1])), line)
 

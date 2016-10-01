@@ -50,6 +50,10 @@ class TilingScheme (object):
         data_pad_or_crop = [_add_pad_or_crop(p, q) for p, q in zip(self.data_pad_or_crop, padding)]
         return TilingScheme(tile_shape, self.step_shape, mode=self.mode, data_pad_or_crop=data_pad_or_crop)
 
+    def __repr__(self):
+        return 'TilingScheme(ndim={}, tile_shape={}, step_shape={}, mode={}, data_pad_or_crop={})'.format(
+            self.ndim, self.tile_shape, self.step_shape, self.mode, self.data_pad_or_crop
+        )
 
 
 class DataTilingScheme (object):
@@ -121,6 +125,32 @@ class DataTilingScheme (object):
         return padding if non_zero else None
 
     @property
+    def inv_padding_as_slices(self):
+        padding = []
+        non_zero = False
+        for pc in self.data_pad_or_crop:
+            c = slice(None)
+            if pc is not None:
+                start = pc[0] if pc[0] > 0 else None
+                stop = -pc[1] if pc[1] > 0 else None
+                c = slice(start, stop)
+            padding.append(c)
+            non_zero = non_zero or c != slice(None)
+        return padding if non_zero else None
+
+    @property
+    def cropping(self):
+        cropping = []
+        non_zero = False
+        for pc in self.data_pad_or_crop:
+            c = 0,0
+            if pc is not None:
+                c = max(-pc[0], 0), max(-pc[1], 0)
+            cropping.append(c)
+            non_zero = non_zero or c != (0,0)
+        return cropping if non_zero else None
+
+    @property
     def cropping_as_slices(self):
         cropping = []
         non_zero = False
@@ -153,6 +183,10 @@ class DataTilingScheme (object):
         data_pad_or_crop = [_downsample_pad_or_crop(pc, f, s, r)   for pc, f, s, r in zip(self.data_pad_or_crop, factor, data_shape, self.req_data_shape)]
         return DataTilingScheme(data_shape, tile_shape, step_shape, data_pad_or_crop=data_pad_or_crop)
 
+    def __repr__(self):
+        return 'DataTilingScheme(ndim={}, data_shape={}, tile_shape={}, step_shape={}, data_pad_or_crop={}, tiles={}, req_data_shape={})'.format(
+            self.ndim, self.data_shape, self.tile_shape, self.step_shape, self.data_pad_or_crop, self.tiles, self.req_data_shape
+        )
 
 
 import unittest
