@@ -1,3 +1,4 @@
+import six
 import numpy as np
 import theano
 import theano.tensor as T
@@ -8,7 +9,7 @@ from . import trainer, dnn_objective
 class BasicDNN (object):
     def __init__(self, input_vars, target_and_mask_vars, final_layers, objectives,
                  score_objective=None,
-                 trainable_params=None, updates_fn=None, params_path=None):
+                 trainable_params=None, updates_fn=None, params_source=None):
         """
         Constructor - construct a `SampleDNN` instance given variables for
         input, target and a final layer (a Lasagne layer)
@@ -26,7 +27,9 @@ class BasicDNN (object):
             an optimisation technique e.g. Nesterov Momentum:
             `lambda cost, params: lasagne.updates.nesterov_momentum(cost, params,
                 learning_rate=0.002, momentum=0.9)`
-        :param params_path: [optional] path from which to load network parameters
+        :param params_source: [optional] source from which to obtain network parameters; either
+            a str/unicode that contains the path of a NumPy array file from which to load the parameters,
+            or a `BasicDNN` or Lasagne layer from which to copy the parameters
         """
         self.input_vars = input_vars
         self.target_and_mask_vars = target_and_mask_vars
@@ -41,8 +44,18 @@ class BasicDNN (object):
 
         self.score_objective = score_objective
 
-        if params_path is not None:
-            self.load_params(params_path)
+        if params_source is not None:
+            if isinstance(params_source, six.string_types):
+                self.load_params(params_source)
+            elif isinstance(params_source, BasicDNN):
+                self.set_param_values(params_source.get_param_values())
+            elif isinstance(params_source, lasagne.layers.Layer) or trainer.is_sequence_of_layers(params_source):
+                params_in = trainer.get_network_params(params_source)
+                values = trainer.get_param_values(params_in)
+                self.set_param_values(values)
+            else:
+                raise TypeError('params_source must be a string containing a path, a `BasicDNN` instance, '
+                                'a Lasagne layer or a sequence of Lasagne layers, not a {}'.format(type(params_source)))
 
         self.objective_results = [obj.build() for obj in self.objectives]
         train_cost = sum([obj_res.train_cost for obj_res in self.objective_results])
@@ -231,13 +244,13 @@ class BasicClassifierDNN (BasicDNN):
     """
     def __init__(self, input_vars, target_and_mask_vars, final_layers, classifier_objective,
                  score_objective=None,
-                 trainable_params=None, updates_fn=None, params_path=None):
+                 trainable_params=None, updates_fn=None, params_source=None):
         if not isinstance(classifier_objective, dnn_objective.ClassifierObjective):
             raise TypeError('classifier_objective must be an instance of dnn_objective.ClassifierObjective')
         super(BasicClassifierDNN, self).__init__(input_vars, target_and_mask_vars, final_layers,
                                                  [classifier_objective], score_objective=score_objective,
                                                  trainable_params=trainable_params, updates_fn=updates_fn,
-                                                 params_path=params_path)
+                                                 params_source=params_source)
         self._classifier_objective = classifier_objective
 
     @property
@@ -276,7 +289,7 @@ class BasicClassifierDNN (BasicDNN):
 
 def simple_classifier(network_build_fn, n_input_spatial_dims=0, n_target_spatial_dims=0,
                       target_channel_index=None, score=dnn_objective.ClassifierObjective.SCORE_ERROR, mask=False,
-                      params_path=None, *args, **kwargs):
+                      params_source=None, *args, **kwargs):
     """
     Construct an image classifier, given a network building function
     and an optional path from which to load parameters.
@@ -302,7 +315,9 @@ def simple_classifier(network_build_fn, n_input_spatial_dims=0, n_target_spatial
     :param score: the scoring metric used to evaluate classifier performance (see `dnn_objective.ClassifierObjective`)
     :param mask: (default=False) if True, samples will be masked, in which case sample weights/masks should
     be passed during training
-    :param params_path: [optional] path from which to load network parameters
+    :param params_source: [optional] source from which to obtain network parameters; either
+        a str/unicode that contains the path of a NumPy array file from which to load the parameters,
+        or a `BasicDNN` or Lasagne layer from which to copy the parameters
     :return: a classifier instance
     """
     if n_input_spatial_dims == 0:
@@ -319,12 +334,12 @@ def simple_classifier(network_build_fn, n_input_spatial_dims=0, n_target_spatial
             n_target_spatial_dims))
     return classifier(input_vars, network_build_fn, n_target_spatial_dims=n_target_spatial_dims,
                       target_channel_index=target_channel_index, score=score, mask=mask,
-                      params_path=params_path, *args, **kwargs)
+                      params_source=params_source, *args, **kwargs)
 
 
 def classifier(input_vars, network_build_fn, n_target_spatial_dims=0, target_channel_index=None,
                score=dnn_objective.ClassifierObjective.SCORE_ERROR, mask=False,
-               params_path=None, *args, **kwargs):
+               params_source=None, *args, **kwargs):
     """
     Construct a classifier, given input variables and a network building function
     and an optional path from which to load parameters.
@@ -346,7 +361,9 @@ def classifier(input_vars, network_build_fn, n_target_spatial_dims=0, target_cha
     :param score: the scoring metric used to evaluate classifier performance (see `dnn_objective.ClassifierObjective`)
     :param mask: (default=False) if True, samples will be masked, in which case sample weights/masks should
     be passed during training
-    :param params_path: [optional] path from which to load network parameters
+    :param params_source: [optional] source from which to obtain network parameters; either
+        a str/unicode that contains the path of a NumPy array file from which to load the parameters,
+        or a `BasicDNN` or Lasagne layer from which to copy the parameters
     :return: a classifier instance
     """
     # Prepare Theano variables for inputs and targets
@@ -389,10 +406,10 @@ def classifier(input_vars, network_build_fn, n_target_spatial_dims=0, target_cha
                                                   target_channel_index=target_channel_index, score=score)
 
     return BasicClassifierDNN(input_vars, [target_var] + mask_vars, network, objective,
-                              params_path=params_path, *args, **kwargs)
+                              params_source=params_source, *args, **kwargs)
 
 def simple_regressor(network_build_fn, n_input_spatial_dims=0, n_target_spatial_dims=0, mask=False,
-                     params_path=None, *args, **kwargs):
+                     params_source=None, *args, **kwargs):
     """
     Construct a vector regressor, given a network building function
     and an optional path from which to load parameters.
@@ -410,7 +427,9 @@ def simple_regressor(network_build_fn, n_input_spatial_dims=0, n_target_spatial_
         3 for 3-dimensional prediction e.g. volume, with tensor5 variable type (sample, channel, depth, height, width),
     :param mask: (default=False) if True, samples will be masked, in which case sample weights/masks should
     be passed during training
-    :param params_path: [optional] path from which to load network parameters
+    :param params_source: [optional] source from which to obtain network parameters; either
+        a str/unicode that contains the path of a NumPy array file from which to load the parameters,
+        or a `BasicDNN` or Lasagne layer from which to copy the parameters
     :return: a classifier instance
     """
     if n_input_spatial_dims == 0:
@@ -426,11 +445,11 @@ def simple_regressor(network_build_fn, n_input_spatial_dims=0, n_target_spatial_
         raise ValueError('Valid values for n_input_spatial_dims are in the range 0-3, not {}'.format(
             n_target_spatial_dims))
     return regressor(input_vars, network_build_fn, n_target_spatial_dims=n_target_spatial_dims,
-                     mask=mask, params_path=params_path, *args, **kwargs)
+                     mask=mask, params_source=params_source, *args, **kwargs)
 
 
 def regressor(input_vars, network_build_fn, n_target_spatial_dims=0, mask=False,
-              params_path=None, *args, **kwargs):
+              params_source=None, *args, **kwargs):
     """
     Construct a regressor, given a network building function
     and an optional path from which to load parameters.
@@ -444,7 +463,9 @@ def regressor(input_vars, network_build_fn, n_target_spatial_dims=0, mask=False,
         3 for 3-dimensional prediction e.g. volume, with tensor5 variable type (sample, channel, depth, height, width),
     :param mask: (default=False) if True, samples will be masked, in which case sample weights/masks should
     be passed during training
-    :param params_path: [optional] path from which to load network parameters
+    :param params_source: [optional] source from which to obtain network parameters; either
+        a str/unicode that contains the path of a NumPy array file from which to load the parameters,
+        or a `BasicDNN` or Lasagne layer from which to copy the parameters
     :return: a classifier instance
     """
     # Prepare Theano variables for inputs and targets
@@ -485,4 +506,4 @@ def regressor(input_vars, network_build_fn, n_target_spatial_dims=0, mask=False,
                                                  n_target_spatial_dims=n_target_spatial_dims)
 
     return BasicDNN(input_vars, [target_var] + mask_vars, network, [objective],
-                    params_path=params_path, *args, **kwargs)
+                    params_source=params_source, *args, **kwargs)
