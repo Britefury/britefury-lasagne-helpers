@@ -90,7 +90,7 @@ class DataTilingScheme (object):
                 dsize += (pad_or_crop[0] + pad_or_crop[1])
 
             # Compute the number of tiles
-            n_tiles = (dsize - tsize) / ssize + 1
+            n_tiles = (dsize - tsize) // ssize + 1
             if mode == TILING_MODE_PAD:
                 # If using PAD mode and there is unused data left over, we need an extra tile
                 if ((dsize - tsize) % ssize) > 0:
