@@ -72,6 +72,15 @@ def _is_sequence_of_arrays(dataset):
         return True
     return False
 
+def is_sequence_of_layers(xs):
+    if isinstance(xs, (tuple, list)):
+        for x in xs:
+            if not isinstance(x, lasagne.layers.Layer):
+                return False
+        return True
+    return False
+
+
 
 def iterate_minibatches(data, batchsize, shuffle_rng=None):
     N = data[0].shape[0]

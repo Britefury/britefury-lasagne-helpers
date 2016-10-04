@@ -188,6 +188,12 @@ class ImageWindowExtractor (object):
         return window_batch_iterator
 
 
+    def __repr__(self):
+        return 'ImageWindowExtractor(n_images={}, downsample={}, N={}, tiling={})'.format(
+            self.N_images, self.downsample, self.N, self.tiling
+        )
+
+
 class ImageWindowAssembler (object):
     def __init__(self, image_shape, image_n_channels, n_images, tiling, upsample=None, upsample_order=0,
                  pad_mode='reflect', img_dtype=np.float32):

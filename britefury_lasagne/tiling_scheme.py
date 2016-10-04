@@ -1,4 +1,25 @@
 
+def _dim_pad_crop(source_size, dest_size):
+    diff = dest_size - source_size
+    p0 = diff // 2
+    return p0, diff - p0
+
+def compute_pad_or_crop(source_shape, dest_shape):
+    """
+    Compute the padding or cropping required to transform a block of shape `source_shape` into
+    a block of shape `dest_shape`. Note that `source_shape` and `dest_shape` must have they same
+    number of dimensions; e.g. `len(source_shape) == len(dest_shape)`.
+
+    :param source_shape: the shape of the source block as a sequence of integers
+    :param dest_shape: the shape of the destination block as a sequence of integers
+    :return: per dimension padding/cropping, where each entry is a 2-tuple that gives the padding/cropping
+        before/left/above and after/right/below. The values are positive for padding and negative for cropping.
+        e.g. `[(pad_crop_before_0, pad_crop_after_0), (pad_crop_before_1, pad_crop_after_1), ...]`
+    """
+    if len(source_shape) != len(dest_shape):
+        raise ValueError('source_shape has {} dimensions, dest_shape has {}; should be the same'.format(len(source_shape), len(dest_shape)))
+    return [_dim_pad_crop(s, d) for s, d in zip(source_shape, dest_shape)]
+
 def _add_pad_or_crop(x, y):
     if x is not None and y is not None:
         return x[0] + y[0], x[1] + y[1]
@@ -90,7 +111,7 @@ class DataTilingScheme (object):
                 dsize += (pad_or_crop[0] + pad_or_crop[1])
 
             # Compute the number of tiles
-            n_tiles = (dsize - tsize) / ssize + 1
+            n_tiles = (dsize - tsize) // ssize + 1
             if mode == TILING_MODE_PAD:
                 # If using PAD mode and there is unused data left over, we need an extra tile
                 if ((dsize - tsize) % ssize) > 0:
