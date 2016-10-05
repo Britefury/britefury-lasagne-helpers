@@ -332,7 +332,8 @@ class RegressorObjective (AbstractObjective):
         super(RegressorObjective, self).__init__(name, cost_weight)
         self.objective_layer = objective_layer
         self.target_expr = target_expr
-        self.mask_expr = mask_expr
+        # Broadcast dimension 1
+        self.mask_expr = T.addbroadcast(mask_expr, 1)
         self.n_target_spatial_dims = n_target_spatial_dims
 
 
