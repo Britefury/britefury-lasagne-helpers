@@ -162,7 +162,7 @@ class Trainer (object):
 
         self.eval_batch_fn = None
         self.eval_log_fn = None
-        self.validation_improved_fn = lambda x, y: x[0] < y[0]
+        self.validation_score_fn = lambda x: x[0]
         self.validation_interval = None
 
         self.pre_epoch_fn = None
@@ -221,7 +221,7 @@ class Trainer (object):
         self.train_pass_epoch_number = pass_epoch_number
         return self
 
-    def evaluate_with(self, eval_batch_fn, eval_log_fn=None, validation_improved_fn=0):
+    def evaluate_with(self, eval_batch_fn, eval_log_fn=None, validation_score_fn=0):
         """
         Set the batch validation/test function.
 
@@ -235,18 +235,18 @@ class Trainer (object):
         to provide a function that negates/inverts the score.
         :param eval_log_fn: [optional] a function of the form `fn(eval_results) -> str` that generates
         log output for evaluation results
-        :param validation_improved_fn: Either an integer index or a callable; if an index then
-        improvement is detected via `val_results_new[validation_improved_fn] <
-        val_best_so_far[validation_improved_fn]`, if a callable then the
-        score is obtained via `validation_improved_fn(val_results_new, val_results_best_so_far)`.
+        :param validation_score_fn: Either an integer index or a callable; if an index then
+        score is obtained via `val_results[validation_score_fn]`, if a callable then the
+        score is obtained via `validation_score_fn(val_results`. The score is used for e.g. retaining
+        the state of the network at the point at which the validation score was lowest
         :return: `self`
         """
         self.eval_batch_fn = eval_batch_fn
         self.eval_log_fn = eval_log_fn
-        if isinstance(validation_improved_fn, six.integer_types):
-            self.validation_improved_fn = lambda x, y: x[validation_improved_fn] < y[validation_improved_fn]
-        elif callable(validation_improved_fn):
-            self.validation_improved_fn = validation_improved_fn
+        if isinstance(validation_score_fn, six.integer_types):
+            self.validation_score_fn = lambda x: x[validation_score_fn]
+        elif callable(validation_score_fn):
+            self.validation_score_fn = validation_score_fn
         else:
             raise TypeError('validation_score should be an integer index or a function')
         return self
@@ -430,6 +430,7 @@ class Trainer (object):
         validation_results = None
         best_train_results = None
         best_validation_results = None
+        best_validation_score = None
         best_epoch = None
         best_state = None
         state_saved = False
@@ -494,13 +495,16 @@ class Trainer (object):
                 if self.verbosity == VERBOSITY_BATCH:
                     self._log('\r')
 
+                validation_score = self.validation_score_fn(validation_results)
+
                 if best_validation_results is None or \
-                        self.validation_improved_fn(validation_results, best_validation_results):
+                                validation_score < best_validation_score:
                     validation_improved = True
 
                     # Validation score improved
                     best_train_results = train_results
                     best_validation_results = validation_results
+                    best_validation_score = validation_score
                     best_epoch = epoch
                     best_state = self._save_state()
                     state_saved = True
@@ -935,7 +939,7 @@ class Test_Trainer (unittest.TestCase):
         trainer = Trainer()
         trainer.train_with(train_batch_fn=train_fn)
         trainer.train_for(num_epochs=200)
-        trainer.evaluate_with(eval_fn, validation_improved_fn=1)
+        trainer.evaluate_with(eval_fn, validation_score_fn=1)
         trainer.report(log_stream=log, verbosity=VERBOSITY_NONE, final_result=False)
 
         res = trainer.train([np.arange(5)], [np.arange(5)], None, 5)
@@ -958,7 +962,7 @@ class Test_Trainer (unittest.TestCase):
         trainer = Trainer()
         trainer.train_with(train_batch_fn=train_fn)
         trainer.train_for(num_epochs=200)
-        trainer.evaluate_with(eval_fn, validation_improved_fn=lambda a, b: a[1] < b[1])
+        trainer.evaluate_with(eval_fn, validation_score_fn=lambda a: a[1])
         trainer.report(log_stream=log, verbosity=VERBOSITY_NONE, final_result=False)
 
         res = trainer.train([np.arange(5)], [np.arange(5)], None, 5)
@@ -981,7 +985,7 @@ class Test_Trainer (unittest.TestCase):
         trainer = Trainer()
         trainer.train_with(train_batch_fn=train_fn)
         trainer.train_for(num_epochs=150)
-        trainer.evaluate_with(eval_fn, validation_improved_fn=lambda a, b: a[1] < b[1])
+        trainer.evaluate_with(eval_fn, validation_score_fn=lambda a: a[1])
         trainer.report(log_stream=log, verbosity=VERBOSITY_NONE, final_result=False)
 
         res = trainer.train([np.arange(5)], [np.arange(5)], None, 5)
@@ -1004,7 +1008,7 @@ class Test_Trainer (unittest.TestCase):
         trainer = Trainer()
         trainer.train_with(train_batch_fn=train_fn)
         trainer.train_for(num_epochs=200, min_epochs=95)
-        trainer.evaluate_with(eval_fn, validation_improved_fn=lambda a, b: a[1] < b[1])
+        trainer.evaluate_with(eval_fn, validation_score_fn=lambda a: a[1])
         trainer.report(log_stream=log, verbosity=VERBOSITY_NONE, final_result=False)
 
         res = trainer.train([np.arange(5)], [np.arange(5)], None, 5)
@@ -1027,7 +1031,7 @@ class Test_Trainer (unittest.TestCase):
         trainer = Trainer()
         trainer.train_with(train_batch_fn=train_fn)
         trainer.train_for(num_epochs=200, min_epochs=95, val_improve_num_epochs=10)
-        trainer.evaluate_with(eval_fn, validation_improved_fn=lambda a, b: a[1] < b[1])
+        trainer.evaluate_with(eval_fn, validation_score_fn=lambda a: a[1])
         trainer.report(log_stream=log, verbosity=VERBOSITY_NONE, final_result=False)
 
         res = trainer.train([np.arange(5)], [np.arange(5)], None, 5)
@@ -1050,7 +1054,7 @@ class Test_Trainer (unittest.TestCase):
         trainer = Trainer()
         trainer.train_with(train_batch_fn=train_fn)
         trainer.train_for(num_epochs=200, min_epochs=65, val_improve_epochs_factor=2)
-        trainer.evaluate_with(eval_fn, validation_improved_fn=lambda a, b: a[1] < b[1])
+        trainer.evaluate_with(eval_fn, validation_score_fn=lambda a: a[1])
         trainer.report(log_stream=log, verbosity=VERBOSITY_NONE, final_result=False)
 
         res = trainer.train([np.arange(5)], [np.arange(5)], None, 5)
@@ -1073,7 +1077,7 @@ class Test_Trainer (unittest.TestCase):
         trainer = Trainer()
         trainer.train_with(train_batch_fn=train_fn)
         trainer.train_for(num_epochs=200, min_epochs=65, val_improve_epochs_factor=2)
-        trainer.evaluate_with(eval_fn, validation_improved_fn=lambda a, b: a[1] < b[1])
+        trainer.evaluate_with(eval_fn, validation_score_fn=lambda a: a[1])
         trainer.report(log_stream=log, verbosity=VERBOSITY_NONE, final_result=False)
 
         res = trainer.train([np.arange(5)], [np.arange(5)], None, 5)
@@ -1091,7 +1095,7 @@ class Test_Trainer (unittest.TestCase):
         trainer = Trainer()
         trainer.train_with(train_batch_fn=train_fn)
         trainer.train_for(num_epochs=200, min_epochs=65, val_improve_epochs_factor=2)
-        trainer.evaluate_with(eval_fn, validation_improved_fn=lambda a, b: a[1] < b[1])
+        trainer.evaluate_with(eval_fn, validation_score_fn=lambda a: a[1])
         trainer.report(log_stream=log, verbosity=VERBOSITY_MINIMAL, final_result=False)
 
         res = trainer.train([np.arange(5)], [np.arange(5)], None, 5)
@@ -1111,7 +1115,7 @@ class Test_Trainer (unittest.TestCase):
         trainer = Trainer()
         trainer.train_with(train_batch_fn=train_fn)
         trainer.train_for(num_epochs=200, min_epochs=65, val_improve_epochs_factor=2)
-        trainer.evaluate_with(eval_fn, validation_improved_fn=lambda a, b: a[1] < b[1])
+        trainer.evaluate_with(eval_fn, validation_score_fn=lambda a: a[1])
         trainer.report(log_stream=log, verbosity=VERBOSITY_EPOCH, final_result=False)
 
         res = trainer.train([np.arange(5)], [np.arange(5)], None, 5)
@@ -1144,7 +1148,7 @@ class Test_Trainer (unittest.TestCase):
         trainer = Trainer()
         trainer.train_with(train_batch_fn=train_fn)
         trainer.train_for(num_epochs=200, min_epochs=65, val_improve_epochs_factor=2)
-        trainer.evaluate_with(eval_fn, validation_improved_fn=lambda a, b: a[1] < b[1])
+        trainer.evaluate_with(eval_fn, validation_score_fn=lambda a: a[1])
         trainer.report(log_stream=log, verbosity=VERBOSITY_BATCH, final_result=False)
 
         res = trainer.train([np.arange(20)], [np.arange(20)], None, 5)
@@ -1152,8 +1156,9 @@ class Test_Trainer (unittest.TestCase):
         self.assertEqual(train_fn.count, 608)
         self.assertEqual(eval_fn.count, 608)
         log_lines = log.getvalue().split('\n')
-        for i, (line_a, line_b) in enumerate(zip(log_lines[:-2:2], log_lines[1:-2:2])):
-            if line_a.strip() != '' and line_b.strip() != '':
+        for i, line in enumerate(log_lines):
+            batches, _, epoch = line.rpartition('\r')
+            if batches.strip() != '' and epoch.strip() != '':
                 if sys.version_info[0] == 2:
                     pattern_b = re.escape('Epoch {0} ('.format(i)) + \
                               r'[0-9]+\.[0-9]+s' + \
@@ -1162,10 +1167,10 @@ class Test_Trainer (unittest.TestCase):
                     pattern_b = re.escape('Epoch {0} ('.format(i)) + \
                               r'[0-9]+\.[0-9]+s' + \
                               re.escape('): train None, validation [{0}, {1}]'.format(float(val_output[i][0]), float(val_output[i][1])))
-                self.assertEqual(line_a, '[....]')
-                match = re.match(pattern_b, line_b)
-                if match is None or match.end(0) != len(line_b):
-                    self.fail(msg='No match "{}" with pattern "{}"'.format(line_b, pattern_b))
+                self.assertEqual(batches, '\r' + '\r'.join(['[train {}]'.format(i) for i in range(4)]) + '\r\r' + '\r'.join(['[val {}]'.format(i) for i in range(4)]))
+                match = re.match(pattern_b, epoch)
+                if match is None or match.end(0) != len(epoch):
+                    self.fail(msg='No match "{}" with pattern "{}"'.format(epoch, pattern_b))
 
 
     def test_report_epoch_log_fn(self):
@@ -1188,7 +1193,7 @@ class Test_Trainer (unittest.TestCase):
         trainer = Trainer()
         trainer.train_with(train_batch_fn=train_fn, train_log_fn=train_log)
         trainer.train_for(num_epochs=200, min_epochs=65, val_improve_epochs_factor=2)
-        trainer.evaluate_with(eval_fn, eval_log_fn=eval_log, validation_improved_fn=lambda a, b: a[1] < b[1])
+        trainer.evaluate_with(eval_fn, eval_log_fn=eval_log, validation_score_fn=lambda a: a[1])
         trainer.report(log_stream=log, verbosity=VERBOSITY_EPOCH, epoch_log_fn=epoch_log_fn, final_result=False)
 
         trainer.train([np.arange(5)], [np.arange(5)], None, 5)

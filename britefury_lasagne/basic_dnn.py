@@ -37,12 +37,15 @@ class BasicDNN (object):
         self.objectives = objectives
 
         if score_objective is None:
-            score_objective = objectives[0]
-        else:
+            self.score_objectives = objectives[0:1]
+        elif isinstance(score_objective, dnn_objective.AbstractObjective):
             if score_objective not in objectives:
                 raise ValueError('score_objective not in objectives')
-
-        self.score_objective = score_objective
+            self.score_objectives = [score_objective]
+        elif isinstance(score_objective, (list, tuple)):
+            self.score_objectives = list(score_objective)
+        else:
+            raise TypeError('score_objective must be None, a AbstractObjective instance or a sequence of AbstractObjective instances')
 
         if params_source is not None:
             if isinstance(params_source, six.string_types):
@@ -63,7 +66,7 @@ class BasicDNN (object):
         self.train_results_indices = []
         eval_results = []
         self.eval_results_indices = []
-        self.score_objective_index = self.objectives.index(score_objective)
+        self.score_objective_indices = [self.objectives.index(s_o) for s_o in self.score_objectives]
         predictions = []
         for obj_res in self.objective_results:
             self.train_results_indices.append(len(train_results))
@@ -103,7 +106,7 @@ class BasicDNN (object):
                                 train_epoch_results_check_fn=self._check_train_epoch_results)
         # Evaluate with evaluation function, the second output value - error rate - is used for scoring
         self.trainer.evaluate_with(eval_batch_fn=self._val_fn, eval_log_fn=self._eval_log,
-                                   validation_improved_fn=self._score_improved)
+                                   validation_score_fn=self._score)
         # Set the epoch logging function
         self.trainer.report(epoch_log_fn=self._epoch_log)
         # Tell the trainer to store parameters when the validation score (error rate) is best
@@ -185,11 +188,14 @@ class BasicDNN (object):
             eval_items.append(obj_res.eval_results_str_fn(eval_results[i:j]))
         return ', '.join(eval_items)
 
-    def _score_improved(self, new_results, best_so_far):
-        i, j = self.eval_results_indices[self.score_objective_index:self.score_objective_index+2]
-        new_obj_res = new_results[i:j]
-        best_obj_res = best_so_far[i:j]
-        return self.score_objective.score_improved(new_obj_res, best_obj_res)
+    def _score(self, results):
+        score = None
+        for obj_ndx, obj in zip(self.score_objective_indices, self.score_objectives):
+            i, j = self.eval_results_indices[obj_ndx:obj_ndx+2]
+            obj_res = results[i:j]
+            obj_score = obj.score_to_minimise(obj_res)
+            score = (score + obj_score) if score is not None else obj_score
+        return score
 
     def _epoch_log(self, epoch_number, delta_time, train_str, val_str, test_str):
         """

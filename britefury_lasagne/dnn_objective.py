@@ -111,20 +111,24 @@ class AbstractObjective (object):
     transform_input_target = None
     inv_transform_prediction = None
 
-    def __init__(self, name, cost_weight=1.0):
+    def __init__(self, name, cost_weight=1.0, score_weight=None):
         """
         Abstract objective
 
         :param name: name of objective
         :param cost_weight: (default=1.0) weight applied to this objectives cost
+        :param score_weight: (default=None) weight applied to this score, if `None` will use `cost_weight`
         """
         self.name = name
+        if score_weight is None:
+            score_weight = cost_weight
         self.cost_weight = lasagne.utils.floatX(cost_weight)
+        self.score_weight = lasagne.utils.floatX(score_weight)
 
     def build(self):
         raise NotImplementedError('Abstract for {}'.format(type(self)))
 
-    def score_improved(self, new_results, best_so_far_results):
+    def score_to_minimise(self, results):
         raise NotImplementedError('Abstract for {}'.format(type(self)))
 
 
@@ -137,7 +141,7 @@ class ClassifierObjective (AbstractObjective):
     SCORE_F1 = 'f1'
 
     def __init__(self, name, objective_layer, target_expr, mask_expr=None, n_target_spatial_dims=0,
-                 target_channel_index=None, score=SCORE_ERROR, cost_weight=1.0):
+                 target_channel_index=None, score=SCORE_ERROR, cost_weight=1.0, score_weight=None):
         """
         Multi-class classifier objective
 
@@ -155,7 +159,7 @@ class ClassifierObjective (AbstractObjective):
         respectively
         :param cost_weight: (default=1.0) weight applied to the cost of this objective
         """
-        super(ClassifierObjective, self).__init__(name, cost_weight)
+        super(ClassifierObjective, self).__init__(name, cost_weight, score_weight)
         self.objective_layer = objective_layer
         self.target_expr = target_expr
         self.mask_expr = mask_expr
@@ -308,17 +312,17 @@ class ClassifierObjective (AbstractObjective):
 
 
 
-    def score_improved(self, new_results, best_so_far_results):
+    def score_to_minimise(self, results):
         if self.score == self.SCORE_ERROR:
-            return new_results[1] < best_so_far_results[1]
+            return results[1] * self.score_weight
         else:
-            return self._compute_score(new_results) > self._compute_score(best_so_far_results)
+            return (1.0 - self._compute_score(results)) * self.score_weight
 
 
 
 class RegressorObjective (AbstractObjective):
     def __init__(self, name, objective_layer, target_expr, mask_expr=None, n_target_spatial_dims=0,
-                 cost_weight=1.0):
+                 cost_weight=1.0, score_weight=None):
         """
         Regression objective
 
@@ -329,7 +333,7 @@ class RegressorObjective (AbstractObjective):
         :param n_target_spatial_dims: (default=0) number of spatial dimensions for the target
         :param cost_weight: (default=1.0) weight applied to the cost of this objective
         """
-        super(RegressorObjective, self).__init__(name, cost_weight)
+        super(RegressorObjective, self).__init__(name, cost_weight, score_weight)
         self.objective_layer = objective_layer
         self.target_expr = target_expr
         # Broadcast dimension 1
@@ -375,5 +379,5 @@ class RegressorObjective (AbstractObjective):
                                eval_results_str_fn=eval_results_str_fn,
                                prediction=eval_pred)
 
-    def score_improved(self, new_results, best_so_far_results):
-        return new_results[0] < best_so_far_results[0]
+    def score_to_minimise(self, results):
+        return results[0] * self.score_weight
