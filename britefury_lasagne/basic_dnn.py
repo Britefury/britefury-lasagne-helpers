@@ -469,6 +469,7 @@ def regressor(input_vars, network_build_fn, n_target_spatial_dims=0, mask=False,
     :return: a classifier instance
     """
     # Prepare Theano variables for inputs and targets
+    tensor5 = T.TensorType(theano.config.floatX, (False,)*5, 'tensor5')
     if n_target_spatial_dims == 0:
         target_var = T.matrix('y')
     elif n_target_spatial_dims == 1:
@@ -476,7 +477,6 @@ def regressor(input_vars, network_build_fn, n_target_spatial_dims=0, mask=False,
     elif n_target_spatial_dims == 2:
         target_var = T.tensor4('y')
     elif n_target_spatial_dims == 3:
-        tensor5 = T.TensorType(theano.config.floatX, (False,)*5, 'tensor5')
         target_var = tensor5('y')
     else:
         raise ValueError('Valid values for n_target_spatial_dims are in the range 0-3, not {}'.format(
@@ -484,13 +484,13 @@ def regressor(input_vars, network_build_fn, n_target_spatial_dims=0, mask=False,
 
     if mask:
         if n_target_spatial_dims == 0:
-            mask_var = T.vector('m')
-        elif n_target_spatial_dims == 1:
             mask_var = T.matrix('m')
-        elif n_target_spatial_dims == 2:
+        elif n_target_spatial_dims == 1:
             mask_var = T.tensor3('m')
-        elif n_target_spatial_dims == 3:
+        elif n_target_spatial_dims == 2:
             mask_var = T.tensor4('m')
+        elif n_target_spatial_dims == 3:
+            mask_var = tensor5('m')
         else:
             raise ValueError('Valid values for n_target_spatial_dims are in the range 0-3, not {}'.format(
                 n_target_spatial_dims))
