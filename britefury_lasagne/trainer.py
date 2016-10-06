@@ -685,7 +685,9 @@ class Trainer (object):
         elif callable(dataset):
             return dataset(batchsize, shuffle_rng=shuffle_rng)
         else:
-            raise TypeError('dataset should be a fuel Dataset instance or a list of arrays')
+            raise TypeError('dataset should be a fuel Dataset instance, list of arrays or a callable, not a {}'.format(
+                type(dataset)
+            ))
 
 
     def batch_loop(self, fn, data, batchsize, shuffle_rng=None, on_complete_batch=None, prepend_args=None):
