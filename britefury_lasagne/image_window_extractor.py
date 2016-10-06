@@ -77,18 +77,19 @@ class ImageWindowExtractor (object):
         self.N = self.N_images * self.img_windows[0] * self.img_windows[1]
 
 
-    def assembler(self, image_n_channels=None, n_images=None, upsample_order=0, pad_mode='reflect'):
+    def assembler(self, image_n_channels=None, n_images=None, upsample_order=0, pad_mode='reflect', img_dtype=None):
         image_n_channels = image_n_channels or self.n_channels
         n_images = n_images or self.N_images
+        img_dtype = img_dtype or self.dtype
         return ImageWindowAssembler(image_shape=self.input_img_shape, image_n_channels=image_n_channels,
                                     n_images=n_images, tiling=self.tiling_scheme, upsample=self.downsample,
-                                    upsample_order=upsample_order, pad_mode=pad_mode, img_dtype=self.dtype)
+                                    upsample_order=upsample_order, pad_mode=pad_mode, img_dtype=img_dtype)
 
 
     def window_indices_to_coords(self, indices):
         block_x = indices % self.img_windows[1]
-        block_y = (indices / self.img_windows[1]) % self.img_windows[0]
-        img_i = (indices / (self.img_windows[0] * self.img_windows[1]))
+        block_y = (indices // self.img_windows[1]) % self.img_windows[0]
+        img_i = (indices // (self.img_windows[0] * self.img_windows[1]))
         return img_i, block_y, block_x
 
     def get_windows(self, indices):
@@ -187,10 +188,9 @@ class ImageWindowExtractor (object):
 
         return window_batch_iterator
 
-
     def __repr__(self):
-        return 'ImageWindowExtractor(n_images={}, downsample={}, N={}, tiling={})'.format(
-            self.N_images, self.downsample, self.N, self.tiling
+        return 'ImageWindowExtractor(n_images={}, downsample={}, N={}, tiling={}, dtype={})'.format(
+            self.N_images, self.downsample, self.N, self.tiling, self.dtype
         )
 
 
@@ -235,11 +235,10 @@ class ImageWindowAssembler (object):
 
         self.N = self.N_images * self.img_windows[0] * self.img_windows[1]
 
-
     def window_indices_to_coords(self, indices):
         block_x = indices % self.img_windows[1]
-        block_y = (indices / self.img_windows[1]) % self.img_windows[0]
-        img_i = (indices / (self.img_windows[0] * self.img_windows[1]))
+        block_y = (indices // self.img_windows[1]) % self.img_windows[0]
+        img_i = (indices // (self.img_windows[0] * self.img_windows[1]))
         return img_i, block_y, block_x
 
     def set_windows(self, indices, X):
@@ -260,8 +259,8 @@ class ImageWindowAssembler (object):
 
     def get_image(self, i):
         x = self.X[i,:,:,:]
-        # Roll channel axis to the back
-        x = np.rollaxis(x, 0, 3)
+        # Move channel axis to the back
+        x = x.transpose(1,2,0)
 
         if self.upsample is not None:
             x = skimage.transform.rescale(x, tuple([float(x) for x in self.upsample]), order=self.upsample_order)
@@ -276,6 +275,12 @@ class ImageWindowAssembler (object):
             x = x[padding[0], padding[1], :]
 
         return x
+
+    def __repr__(self):
+        return 'ImageWindowAssembler(n_images={}, output_img_shape={}, upsample={}, N={}, tiling={}, n_channels={}, dtype={})'.format(
+            self.N_images, self.output_img_shape, self.upsample, self.N, self.tiling, self.n_channels, self.dtype
+        )
+
 
 
 import unittest
