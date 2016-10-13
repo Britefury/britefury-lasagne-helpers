@@ -1,10 +1,17 @@
 import numpy as np
 import skimage.util
 import skimage.transform
-import tiling_scheme
+from . import tiling_scheme, data_source
 
 
-class ImageWindowExtractor (object):
+
+class ImageWindowExtractor (data_source.AbstractBatchIterable):
+    """
+    Extracts windows from a list of images according to a tiling scheme.
+
+    Is index-able and has a `batch_iterator` method so can be passed as a dataset to
+    `data_source.batch_iterator`, `Trainer.train`, etc.
+    """
     def __init__(self, images, image_read_fn, tiling, pad_mode='reflect', downsample=None, postprocess_fn=None):
         """
 
@@ -87,14 +94,42 @@ class ImageWindowExtractor (object):
 
 
     def window_indices_to_coords(self, indices):
-        block_x = indices % self.img_windows[1]
-        block_y = (indices // self.img_windows[1]) % self.img_windows[0]
+        window_x = indices % self.img_windows[1]
+        window_y = (indices // self.img_windows[1]) % self.img_windows[0]
         img_i = (indices // (self.img_windows[0] * self.img_windows[1]))
-        return img_i, block_y, block_x
+        return img_i, window_y, window_x
 
-    def get_windows(self, indices):
-        img_i, block_y, block_x = self.window_indices_to_coords(indices)
-        windows = self.get_windows_by_coords(np.concatenate([img_i[:,None], block_y[:,None], block_x[:,None]], axis=1))
+    def get_windows(self, index):
+        if isinstance(index, (int, long)):
+            img_i, window_y, window_x = self.window_indices_to_coords(index)
+            windows = self.get_windows_by_separate_coords(np.array([img_i]), np.array([window_y]), np.array([window_x]))
+        elif isinstance(index, slice):
+            start, stop, step = index.indices(self.N)
+            indices = np.arange(start, stop, step)
+            img_i, window_y, window_x = self.window_indices_to_coords(indices)
+            windows = self.get_windows_by_separate_coords(img_i, window_y, window_x)
+        elif isinstance(index, np.ndarray):
+            img_i, window_y, window_x = self.window_indices_to_coords(index)
+            windows = self.get_windows_by_separate_coords(img_i, window_y, window_x)
+        else:
+            raise TypeError('index must be an int/long, a slice or a NumPy integer array, not a {}'.format(type(index)))
+        if self.postprocess_fn is not None:
+            windows = self.postprocess_fn(windows)
+        return windows
+
+    def get_windows_by_separate_coords(self, img_i, window_y, window_x):
+        """
+        img_i - array of shape (N) providing image indices
+        block_y - array of shape (N) providing block y-co-ordinate
+        block_x - array of shape (N) providing block x-co-ordinate
+        """
+        block_y = window_y * self.tiling.step_shape[0]
+        block_x = window_x * self.tiling.step_shape[1]
+        windows = np.zeros((img_i.shape[0], self.n_channels) + self.tiling.tile_shape, dtype=self.dtype)
+        for i in xrange(img_i.shape[0]):
+            win = self.X[img_i[i], :, block_y[i]:block_y[i]+self.tiling.tile_shape[0],
+                  block_x[i]:block_x[i]+self.tiling.tile_shape[1]]
+            windows[i,:,:,:] = win
         if self.postprocess_fn is not None:
             windows = self.postprocess_fn(windows)
         return windows
@@ -103,33 +138,21 @@ class ImageWindowExtractor (object):
         """
         coords - array of shape (N,3) where each row is (image_index, block_y, block_x)
         """
-        block_x = coords[:,2] * self.tiling.step_shape[1]
-        block_y = coords[:,1] * self.tiling.step_shape[0]
+        window_x = coords[:,2]
+        window_y = coords[:,1]
         img_i = coords[:,0]
-        windows = np.zeros((coords.shape[0], self.n_channels) + self.tiling.tile_shape, dtype=self.dtype)
-        for i in xrange(coords.shape[0]):
-            win = self.X[img_i[i], :, block_y[i]:block_y[i]+self.tiling.tile_shape[0],
-                  block_x[i]:block_x[i]+self.tiling.tile_shape[1]]
-            windows[i,:,:,:] = win
-        if self.postprocess_fn is not None:
-            windows = self.postprocess_fn(windows)
-        return windows
+        return self.get_windows_by_separate_coords(img_i, window_y, window_x)
 
 
-    def iterate_minibatches(self, batchsize, shuffle_rng=None):
+    def __len__(self):
+        return self.N
+
+    def __getitem__(self, i):
+        return self.get_windows(i)
+
+
+    def batch_iterator(self, batchsize, shuffle_rng=None):
         """
-        A minibatch iterator, can be passed to the methods in trainer as a dataset, e.g.:
-
-        >>> trainer.train(image_window_extractor.iterate_minibatches, None, None, batchsize=128)
-
-        or
-
-        >>> trainer.batch_loop(training_function, image_window_extractor.iterate_minibatches, batchsize=128)
-
-        or
-
-        >>> trainer.batch_iterator(image_window_extractor.iterate_minibatches, batchsize=128)
-
         Please note that this method will extract windows from one set of images. This is often not too useful
         as you frequently need more than one e.g. an input set and a target set. For this, see the
         `ImageWindowExtractor.multiplexed_minibatch_iterator` method.
@@ -147,7 +170,7 @@ class ImageWindowExtractor (object):
 
 
     @staticmethod
-    def multiplexed_minibatch_iterator(*image_window_extractors):
+    def multiplexed_batch_iterator(*image_window_extractors):
         """
         Create a mini-batch iterator that yields mini-batches of windows extracted from a sequence if
         `ImageWindowExtractor` instances.
@@ -155,7 +178,7 @@ class ImageWindowExtractor (object):
 
         >>> input_images = ImageWindowExtractor(...)
         >>> target_images = ImageWindowExtractor(...)
-        >>> batch_iterator = ImageWindowExtractor.multiplexed_minibatch_iterator(input_images, target_images)
+        >>> batch_iterator = ImageWindowExtractor.multiplexed_batch_iterator(input_images, target_images)
 
         Now pass to `Trainer` methods:
 
@@ -252,7 +275,10 @@ class ImageWindowAssembler (object):
         block_x = coords[:,2] * self.tiling.step_shape[1]
         block_y = coords[:,1] * self.tiling.step_shape[0]
         img_i = coords[:,0]
-        for i in xrange(coords.shape[0]):
+        self.set_windows_by_separate_coords(img_i, block_y, block_x, X)
+
+    def set_windows_by_separate_coords(self, img_i, block_y, block_x, X):
+        for i in xrange(img_i.shape[0]):
             self.X[img_i[i], :,
                    block_y[i]:block_y[i]+self.tiling.tile_shape[0],
                    block_x[i]:block_x[i]+self.tiling.tile_shape[1]] = X[i,:,:,:]
