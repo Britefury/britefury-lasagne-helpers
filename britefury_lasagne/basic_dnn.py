@@ -3,7 +3,7 @@ import numpy as np
 import theano
 import theano.tensor as T
 import lasagne
-from . import trainer, dnn_objective
+from . import trainer, dnn_objective, data_source
 
 
 class BasicDNN (object):
@@ -228,7 +228,7 @@ class BasicDNN (object):
         probabilities
         """
         y = []
-        for batch in self.trainer.batch_iterator(X, batchsize, None):
+        for batch in data_source.batch_iterator(X, batchsize, None):
             if batch_xform_fn is not None:
                 batch = batch_xform_fn(batch)
             y_batch = self._predict_fn(*batch)
