@@ -10,14 +10,14 @@ _PARAMS_DIR = os.path.join(config.get_data_dir_path(), 'pretrained_models')
 
 class AbstractImageNetModel (object):
     """
-    Abstract ImageNet model that was trained on Caffe
-    VGG model base class
+    Abstract base class for ImageNet models trained using Caffe
 
     Override the `build_network` class method to define the network architecture
     """
 
-    def __init__(self, mean_value, mean_image, class_names, model_name, param_values,
+    def __init__(self, class_names, model_name, param_values,
                  model_default_image_size, input_shape=None, last_layer_name=None):
+
         # Build the network
         final_layer = self.build_network(input_shape=input_shape)
         # Generate dictionary mapping layer name to layer
@@ -40,8 +40,6 @@ class AbstractImageNetModel (object):
 
         self.final_layer = final_layer
         self.network = network
-        self.mean_value = mean_value
-        self.mean_image = mean_image
         self.class_names = class_names
         self.model_name = model_name
         self.model_default_image_size = model_default_image_size
@@ -57,6 +55,12 @@ class AbstractImageNetModel (object):
     @classmethod
     def build_network(cls, input_shape=None):
         raise NotImplementedError('Abstract for type {}'.format(cls))
+
+    def standardise(self, image_tensor):
+        raise NotImplementedError('Abstract for type {}'.format(type(self)))
+
+    def inv_standardise(self, image_tensor):
+        raise NotImplementedError('Abstract for type {}'.format(type(self)))
 
     def prepare_image(self, im, image_size=None):
         """
@@ -99,17 +103,14 @@ class AbstractImageNetModel (object):
         # Images come in RGB channel order, while VGG net expects BGR:
         im = im[:, :, ::-1]
 
-        # Subtract the mean
-        if self.mean_value is not None:
-            im = im - self.mean_value
-        elif self.mean_image is not None:
-            im = im - self.mean_image.transpose(1,2,0)
-
         # Shuffle axes from (height, width, channel) to (channel, height, width)
         im = np.swapaxes(np.swapaxes(im, 1, 2), 0, 1)
 
         # Add the sample axis to the image; (channel, height, width) -> (sample, channel, height, width)
         im = im[np.newaxis]
+
+        # Standardise
+        im = self.standardise(im)
 
         return rawim, floatX(im)
 
@@ -128,10 +129,11 @@ class AbstractImageNetModel (object):
             else:
                 raise ValueError('Sample dimension has > 1 samples ({})'.format(image.shape[0]))
 
+        # Inverse standardise
+        image = self.inv_standardise(image)
+
         # Move the channel axis: (C, H, W) -> (H, W, C)
         image = np.rollaxis(image, 0, 3)
-        # Add the mean
-        image = image + self.mean_value
         # Clip to [0,255] range
         image = image.clip(0.0, 255.0)
         # Convert to uint8 type

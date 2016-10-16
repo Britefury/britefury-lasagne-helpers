@@ -20,7 +20,23 @@ from britefury_lasagne import config
 from . import imagenet
 
 
-class VGG16Model (imagenet.AbstractImageNetModel):
+
+class AbstractVGGModel (imagenet.AbstractImageNetModel):
+    def __init__(self, mean_value, class_names, model_name, param_values,
+                 model_default_image_size, input_shape=None, last_layer_name=None):
+        super(AbstractVGGModel, self).__init__(class_names, model_name, param_values,
+                                               model_default_image_size, input_shape=input_shape,
+                                               last_layer_name=last_layer_name)
+        self.mean_value = mean_value
+
+    def standardise(self, image_tensor):
+        return image_tensor - self.mean_value[None,:,None,None]
+
+    def inv_standardise(self, image_tensor):
+        return image_tensor + self.mean_value[None,:,None,None]
+
+
+class VGG16Model (AbstractVGGModel):
     @classmethod
     def build_network(cls, input_shape=None):
         if input_shape is None:
@@ -91,12 +107,12 @@ class VGG16Model (imagenet.AbstractImageNetModel):
     @classmethod
     def load(cls, input_shape=None, last_layer_name=None):
         loaded_params = cls.load_params()
-        return cls(loaded_params['mean value'], None, loaded_params['synset words'], loaded_params['model name'],
+        return cls(loaded_params['mean value'], loaded_params['synset words'], loaded_params['model name'],
                    loaded_params['param values'], model_default_image_size=224,
                    input_shape=input_shape, last_layer_name=last_layer_name)
 
 
-class VGG19Model (imagenet.AbstractImageNetModel):
+class VGG19Model (AbstractVGGModel):
     @classmethod
     def build_network(cls, input_shape=None):
         if input_shape is None:
@@ -170,6 +186,6 @@ class VGG19Model (imagenet.AbstractImageNetModel):
     @classmethod
     def load(cls, input_shape=None, last_layer_name=None):
         loaded_params = cls.load_params()
-        return cls(loaded_params['mean value'], None, loaded_params['synset words'], loaded_params['model name'],
+        return cls(loaded_params['mean value'], loaded_params['synset words'], loaded_params['model name'],
                    loaded_params['param values'], model_default_image_size=224,
                    input_shape=input_shape, last_layer_name=last_layer_name)

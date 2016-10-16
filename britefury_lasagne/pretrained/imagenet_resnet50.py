@@ -141,6 +141,19 @@ def _build_residual_block(incoming_layer, ratio_n_filter=1.0, ratio_size=1.0, ha
 
 
 class ResNet50Model (imagenet.AbstractImageNetModel):
+    def __init__(self, mean_image, class_names, model_name, param_values,
+                 model_default_image_size, input_shape=None, last_layer_name=None):
+        super(ResNet50Model, self).__init__(class_names, model_name, param_values,
+                                               model_default_image_size, input_shape=input_shape,
+                                               last_layer_name=last_layer_name)
+        self.mean_image = mean_image
+
+    def standardise(self, image_tensor):
+        return image_tensor - self.mean_image[None,:,:,:]
+
+    def inv_standardise(self, image_tensor):
+        return image_tensor + self.mean_image[None,:,:,:]
+
     @classmethod
     def build_network(cls, input_shape=None):
         if input_shape is None:
@@ -202,6 +215,6 @@ class ResNet50Model (imagenet.AbstractImageNetModel):
     @classmethod
     def load(cls, input_shape=None, last_layer_name=None):
         loaded_params = cls.load_params()
-        return cls(None, loaded_params['mean_image'], loaded_params['synset_words'], 'ResNet 50',
+        return cls(loaded_params['mean_image'], loaded_params['synset_words'], 'ResNet 50',
                    loaded_params['values'], model_default_image_size=224,
                    input_shape=input_shape, last_layer_name=last_layer_name)
