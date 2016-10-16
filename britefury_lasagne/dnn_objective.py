@@ -137,7 +137,7 @@ class ClassifierObjective (AbstractObjective):
     SCORE_F1 = 'f1'
 
     def __init__(self, name, objective_layer, target_expr, mask_expr=None, n_target_spatial_dims=0,
-                 target_channel_index=None, score=SCORE_ERROR, cost_weight=1.0):
+                 target_channel_index=None, score=SCORE_ERROR, includes_softmax=False, cost_weight=1.0):
         """
         Multi-class classifier objective
 
@@ -153,6 +153,8 @@ class ClassifierObjective (AbstractObjective):
         `'recall'`, `'f1'` or use the constants `ClassifierObjective.SCORE_ERROR`, `ClassifierObjective.SCORE_JACCARD`,
         `ClassifierObjective.SCORE_PRECISION`, `ClassifierObjective.SCORE_RECALL`, `ClassifierObjective.SCORE_F1`
         respectively
+        :param includes_softmax: `True` indicates that the objective_layer includes the softmax non-linearity,
+        `False` indicates that it does not, in which case a non-linearity layer will be added
         :param cost_weight: (default=1.0) weight applied to the cost of this objective
         """
         super(ClassifierObjective, self).__init__(name, cost_weight)
@@ -162,16 +164,24 @@ class ClassifierObjective (AbstractObjective):
         self.n_target_spatial_dims = n_target_spatial_dims
         self.target_channel_index = target_channel_index
         self.score = score
-        self.softmax = TemperatureSoftmax()
+        # The value of the `softmax` attribute indicates if the network came with it already in place
+        if includes_softmax:
+            self.softmax = None
+        else:
+            self.softmax = TemperatureSoftmax()
 
 
     @property
     def temperature(self):
-        return self.softmax.temperature
+        if self.softmax is not None:
+            return self.softmax.temperature
+        else:
+            return 1.0
 
     @temperature.setter
     def temperature(self, t):
-        self.softmax.temperature = t
+        if self.softmax is not None:
+            self.softmax.temperature = t
 
 
     def build(self):
@@ -194,7 +204,10 @@ class ClassifierObjective (AbstractObjective):
         inv_n_spatial = lasagne.utils.floatX(1.0 / float(n_spatial))
 
         # Predicted probability layer
-        prob_layer = lasagne.layers.NonlinearityLayer(obj_flat_layer, self.softmax)
+        if self.softmax is not None:
+            prob_layer = lasagne.layers.NonlinearityLayer(obj_flat_layer, self.softmax)
+        else:
+            prob_layer = obj_flat_layer
 
         # Get an expression representing the predicted probability
         train_pred_prob = lasagne.layers.get_output(prob_layer)
