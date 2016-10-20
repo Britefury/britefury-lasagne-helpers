@@ -1,4 +1,4 @@
-import os, sys, pickle
+import os, sys, pickle, collections
 import numpy as np
 import lasagne
 from lasagne.utils import floatX
@@ -47,10 +47,12 @@ class AbstractImageNetModel (object):
     @classmethod
     def _final_layer_to_network_dict(cls, final_layer):
         layers = lasagne.layers.get_all_layers(final_layer)
+        net_dict = collections.OrderedDict()
         for layer in layers:
             if layer.name is None or layer.name == '':
                 raise ValueError('Layer {} has no name'.format(layer))
-        return {layer.name: layer for layer in layers}
+            net_dict[layer.name] = layer
+        return net_dict
 
     @classmethod
     def build_network(cls, input_shape=None):
