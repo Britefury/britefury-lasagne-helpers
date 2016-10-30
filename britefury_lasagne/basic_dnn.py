@@ -3,7 +3,7 @@ import numpy as np
 import theano
 import theano.tensor as T
 import lasagne
-from . import trainer, dnn_objective
+from . import trainer, dnn_objective, data_source
 
 
 class BasicDNN (object):
@@ -234,7 +234,7 @@ class BasicDNN (object):
         probabilities
         """
         y = []
-        for batch in self.trainer.batch_iterator(X, batchsize, None):
+        for batch in data_source.batch_iterator(X, batchsize, None):
             if batch_xform_fn is not None:
                 batch = batch_xform_fn(batch)
             y_batch = self._predict_fn(*batch)
@@ -292,15 +292,22 @@ class BasicClassifierDNN (BasicDNN):
         return res
 
 
+def _get_input_layers(final_layer):
+    layers = lasagne.layers.get_all_layers(final_layer)
+    return [layer for layer in layers if isinstance(layer, lasagne.layers.InputLayer)]
+
+def _get_input_vars(final_layer):
+    input_layers = _get_input_layers(final_layer)
+    return [layer.input_var for layer in input_layers]
 
 def simple_classifier(network_build_fn, n_input_spatial_dims=0, n_target_spatial_dims=0,
                       target_channel_index=None, score=dnn_objective.ClassifierObjective.SCORE_ERROR, mask=False,
-                      params_source=None, *args, **kwargs):
+                      includes_softmax=False, params_source=None, *args, **kwargs):
     """
     Construct an image classifier, given a network building function
     and an optional path from which to load parameters.
     :param network_build_fn: network builder function of the form `fn(input_vars) -> lasagne_layer`
-    that constructs a network in the form of a Lasagne layer, given an input variable (a Theano variable)
+        that constructs a network in the form of a Lasagne layer, given an input variable (a Theano variable)
     :param n_target_spatial_dims: the number of spatial dimensions for the input;
         0 for input sample with matrix variable type (sample, channel)
         1 for 1-dimensional input e.g. time series, with tensor3 variable type (sample, channel, time),
@@ -320,7 +327,9 @@ def simple_classifier(network_build_fn, n_input_spatial_dims=0, n_target_spatial
         0, 1, 2 and 3 dimensional targets and masks use imatrix, itensor3, itensor4 and itensor5 variable types.
     :param score: the scoring metric used to evaluate classifier performance (see `dnn_objective.ClassifierObjective`)
     :param mask: (default=False) if True, samples will be masked, in which case sample weights/masks should
-    be passed during training
+        be passed during training
+    :param includes_softmax: `True` indicates that the final network layer includes the softmax non-linearity,
+        `False` indicates that it does not, in which case a non-linearity layer will be added
     :param params_source: [optional] source from which to obtain network parameters; either
         a str/unicode that contains the path of a NumPy array file from which to load the parameters,
         or a `BasicDNN` or Lasagne layer from which to copy the parameters
@@ -340,18 +349,19 @@ def simple_classifier(network_build_fn, n_input_spatial_dims=0, n_target_spatial
             n_target_spatial_dims))
     return classifier(input_vars, network_build_fn, n_target_spatial_dims=n_target_spatial_dims,
                       target_channel_index=target_channel_index, score=score, mask=mask,
-                      params_source=params_source, *args, **kwargs)
+                      includes_softmax=includes_softmax, params_source=params_source, *args, **kwargs)
 
 
 def classifier(input_vars, network_build_fn, n_target_spatial_dims=0, target_channel_index=None,
-               score=dnn_objective.ClassifierObjective.SCORE_ERROR, mask=False,
+               score=dnn_objective.ClassifierObjective.SCORE_ERROR, mask=False, includes_softmax=False,
                params_source=None, *args, **kwargs):
     """
     Construct a classifier, given input variables and a network building function
     and an optional path from which to load parameters.
-    :param input_vars: a list of input variables
+    :param input_vars: a list of input variables. If `None`, the network will be searched for `InputLayer` instances
+        and their input variables will be used.
     :param network_build_fn: network builder function of the form `fn(input_vars) -> lasagne_layer`
-    that constructs a network in the form of a Lasagne layer, given an input variable (a Theano variable)
+        that constructs a network in the form of a Lasagne layer, given an input variable (a Theano variable)
     :param n_target_spatial_dims: the number of spatial dimensions for the target;
         0 for predict per sample with ivector variable type
         1 for 1-dimensional prediction e.g. time series, with imatrix variable type (sample, time),
@@ -366,7 +376,9 @@ def classifier(input_vars, network_build_fn, n_target_spatial_dims=0, target_cha
         0, 1, 2 and 3 dimensional targets and masks use imatrix, itensor3, itensor4 and itensor5 variable types.
     :param score: the scoring metric used to evaluate classifier performance (see `dnn_objective.ClassifierObjective`)
     :param mask: (default=False) if True, samples will be masked, in which case sample weights/masks should
-    be passed during training
+        be passed during training
+    :param includes_softmax: `True` indicates that the final network layer includes the softmax non-linearity,
+        `False` indicates that it does not, in which case a non-linearity layer will be added
     :param params_source: [optional] source from which to obtain network parameters; either
         a str/unicode that contains the path of a NumPy array file from which to load the parameters,
         or a `BasicDNN` or Lasagne layer from which to copy the parameters
@@ -406,10 +418,13 @@ def classifier(input_vars, network_build_fn, n_target_spatial_dims=0, target_cha
 
     # Build the network
     network = network_build_fn(input_vars=input_vars)
+    if input_vars is None:
+        input_vars = _get_input_vars(network)
 
     objective = dnn_objective.ClassifierObjective('y', network, target_var, mask_expr=mask_var,
                                                   n_target_spatial_dims=n_target_spatial_dims,
-                                                  target_channel_index=target_channel_index, score=score)
+                                                  target_channel_index=target_channel_index, score=score,
+                                                  includes_softmax=includes_softmax)
 
     return BasicClassifierDNN(input_vars, [target_var] + mask_vars, network, objective,
                               params_source=params_source, *args, **kwargs)
@@ -459,7 +474,8 @@ def regressor(input_vars, network_build_fn, n_target_spatial_dims=0, mask=False,
     """
     Construct a regressor, given a network building function
     and an optional path from which to load parameters.
-    :param input_vars: a list of input variables
+    :param input_vars: a list of input variables. If `None`, the network will be searched for `InputLayer` instances
+        and their input variables will be used.
     :param network_build_fn: network builder function of the form `fn(input_vars) -> lasagne_layer`
     that constructs a network in the form of a Lasagne layer, given an input variable (a Theano variable)
     :param n_target_spatial_dims: the number of spatial dimensions for the target;
@@ -507,6 +523,8 @@ def regressor(input_vars, network_build_fn, n_target_spatial_dims=0, mask=False,
 
     # Build the network
     network = network_build_fn(input_vars=input_vars)
+    if input_vars is None:
+        input_vars = _get_input_vars(network)
 
     objective = dnn_objective.RegressorObjective('y', network, target_var, mask_expr=mask_var,
                                                  n_target_spatial_dims=n_target_spatial_dims)

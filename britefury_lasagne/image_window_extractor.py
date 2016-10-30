@@ -1,10 +1,18 @@
+import six
 import numpy as np
 import skimage.util
 import skimage.transform
-import tiling_scheme
+from . import tiling_scheme, data_source
 
 
-class ImageWindowExtractor (object):
+
+class ImageWindowExtractor (data_source.AbstractBatchIterable):
+    """
+    Extracts windows from a list of images according to a tiling scheme.
+
+    Is index-able and has a `batch_iterator` method so can be passed as a dataset to
+    `data_source.batch_iterator`, `Trainer.train`, etc.
+    """
     def __init__(self, images, image_read_fn, tiling, pad_mode='reflect', downsample=None, postprocess_fn=None):
         """
 
@@ -16,15 +24,15 @@ class ImageWindowExtractor (object):
         `postprocess_fn(extracted_windows) -> transformed_extracted_windows` that applies some sort of transformation
         to the extracted data
         """
+        if tiling.ndim != 2:
+            raise ValueError('tiling should have 2 dimensions, not {}'.format(tiling.ndim))
+
         self.images = images
         self.image_read_fn = image_read_fn
         self.postprocess_fn = postprocess_fn
         self.N_images = len(images)
         img0 = self.image_read_fn(images[0])
         self.input_img_shape = img0.shape[:2]
-
-        if tiling.ndim != 2:
-            raise ValueError('tiling should have 2 dimensions, not {}'.format(tiling.ndim))
 
         self.tiling_scheme = tiling
 
@@ -87,14 +95,38 @@ class ImageWindowExtractor (object):
 
 
     def window_indices_to_coords(self, indices):
-        block_x = indices % self.img_windows[1]
-        block_y = (indices // self.img_windows[1]) % self.img_windows[0]
+        window_x = indices % self.img_windows[1]
+        window_y = (indices // self.img_windows[1]) % self.img_windows[0]
         img_i = (indices // (self.img_windows[0] * self.img_windows[1]))
-        return img_i, block_y, block_x
+        return img_i, window_y, window_x
+
+    def get_window(self, index):
+        img_i, window_y, window_x = self.window_indices_to_coords(index)
+        windows = self.get_windows_by_separate_coords(np.array([img_i]), np.array([window_y]), np.array([window_x]))
+        return windows[0,...]
 
     def get_windows(self, indices):
-        img_i, block_y, block_x = self.window_indices_to_coords(indices)
-        windows = self.get_windows_by_coords(np.concatenate([img_i[:,None], block_y[:,None], block_x[:,None]], axis=1))
+        if not isinstance(indices, np.ndarray):
+            raise TypeError('indices must be a NumPy integer array, not a {}'.format(type(indices)))
+        img_i, window_y, window_x = self.window_indices_to_coords(indices)
+        windows = self.get_windows_by_separate_coords(img_i, window_y, window_x)
+        if self.postprocess_fn is not None:
+            windows = self.postprocess_fn(windows)
+        return windows
+
+    def get_windows_by_separate_coords(self, img_i, window_y, window_x):
+        """
+        img_i - array of shape (N) providing image indices
+        block_y - array of shape (N) providing block y-co-ordinate
+        block_x - array of shape (N) providing block x-co-ordinate
+        """
+        block_y = window_y * self.tiling.step_shape[0]
+        block_x = window_x * self.tiling.step_shape[1]
+        windows = np.zeros((img_i.shape[0], self.n_channels) + self.tiling.tile_shape, dtype=self.dtype)
+        for i in xrange(img_i.shape[0]):
+            win = self.X[img_i[i], :, block_y[i]:block_y[i]+self.tiling.tile_shape[0],
+                  block_x[i]:block_x[i]+self.tiling.tile_shape[1]]
+            windows[i,:,:,:] = win
         if self.postprocess_fn is not None:
             windows = self.postprocess_fn(windows)
         return windows
@@ -103,33 +135,30 @@ class ImageWindowExtractor (object):
         """
         coords - array of shape (N,3) where each row is (image_index, block_y, block_x)
         """
-        block_x = coords[:,2] * self.tiling.step_shape[1]
-        block_y = coords[:,1] * self.tiling.step_shape[0]
+        window_x = coords[:,2]
+        window_y = coords[:,1]
         img_i = coords[:,0]
-        windows = np.zeros((coords.shape[0], self.n_channels) + self.tiling.tile_shape, dtype=self.dtype)
-        for i in xrange(coords.shape[0]):
-            win = self.X[img_i[i], :, block_y[i]:block_y[i]+self.tiling.tile_shape[0],
-                  block_x[i]:block_x[i]+self.tiling.tile_shape[1]]
-            windows[i,:,:,:] = win
-        if self.postprocess_fn is not None:
-            windows = self.postprocess_fn(windows)
-        return windows
+        return self.get_windows_by_separate_coords(img_i, window_y, window_x)
 
 
-    def iterate_minibatches(self, batchsize, shuffle_rng=None):
+    def __len__(self):
+        return self.N
+
+    def __getitem__(self, i):
+        if isinstance(i, (int, long)):
+            return self.get_window(i)
+        elif isinstance(i, slice):
+            indices = np.arange(*i.indices(self.N))
+            return self.get_windows(indices)
+        elif isinstance(i, np.ndarray):
+            return self.get_windows(i)
+        else:
+            raise TypeError('i must be an int/long, a slice or a NumPy integer array, not a {}'.format(type(i)))
+
+
+
+    def batch_iterator(self, batchsize, shuffle_rng=None):
         """
-        A minibatch iterator, can be passed to the methods in trainer as a dataset, e.g.:
-
-        >>> trainer.train(image_window_extractor.iterate_minibatches, None, None, batchsize=128)
-
-        or
-
-        >>> trainer.batch_loop(training_function, image_window_extractor.iterate_minibatches, batchsize=128)
-
-        or
-
-        >>> trainer.batch_iterator(image_window_extractor.iterate_minibatches, batchsize=128)
-
         Please note that this method will extract windows from one set of images. This is often not too useful
         as you frequently need more than one e.g. an input set and a target set. For this, see the
         `ImageWindowExtractor.multiplexed_minibatch_iterator` method.
@@ -137,61 +166,165 @@ class ImageWindowExtractor (object):
         :param batchsize: the mini-batch size
         :param shuffle_rng: [optional] a random number generator used to shuffle the order in which image windows
         are extracted
-        :return: an iterator that yields mini-batch tuples of the form `(batch_of_windows, )`
+        :return: an iterator that yields mini-batch lists of the form `[batch_of_windows]`
         """
         indices = np.arange(self.N)
         if shuffle_rng is not None:
             shuffle_rng.shuffle(indices)
         for start_idx in range(0, self.N, batchsize):
-            yield (self.get_windows(indices[start_idx:start_idx + batchsize]), )
-
-
-    @staticmethod
-    def multiplexed_minibatch_iterator(*image_window_extractors):
-        """
-        Create a mini-batch iterator that yields mini-batches of windows extracted from a sequence if
-        `ImageWindowExtractor` instances.
-        A minibatch iterator, can be passed to the methods in trainer as a dataset, e.g.:
-
-        >>> input_images = ImageWindowExtractor(...)
-        >>> target_images = ImageWindowExtractor(...)
-        >>> batch_iterator = ImageWindowExtractor.multiplexed_minibatch_iterator(input_images, target_images)
-
-        Now pass to `Trainer` methods:
-
-        >>> trainer.train(batch_iterator, None, None, batchsize=128)
-
-        or
-
-        >>> trainer.batch_loop(training_function, batch_iterator, batchsize=128)
-
-        or
-
-        >>> trainer.batch_iterator(batch_iterator, batchsize=128)
-
-        :param batchsize: the mini-batch size
-        :param shuffle_rng: [optional] a random number generator used to shuffle the order in which image windows
-        are extracted
-        :return: an iterator that yields mini-batch
-        """
-
-        def window_batch_iterator(batchsize, shuffle_rng=None):
-            d0 = image_window_extractors[0]
-            for d1 in image_window_extractors[1:]:
-                assert d1.N == image_window_extractors[0].N
-            indices = np.arange(image_window_extractors[0].N)
-            if shuffle_rng is not None:
-                shuffle_rng.shuffle(indices)
-            for start_idx in range(0, d0.N, batchsize):
-                batch_indices = indices[start_idx:start_idx + batchsize]
-                yield [d.get_windows(batch_indices) for d in image_window_extractors]
-
-        return window_batch_iterator
+            yield [self.get_windows(indices[start_idx:start_idx + batchsize])]
 
     def __repr__(self):
         return 'ImageWindowExtractor(n_images={}, downsample={}, N={}, tiling={}, dtype={})'.format(
             self.N_images, self.downsample, self.N, self.tiling, self.dtype
         )
+
+
+class NonUniformImageWindowExtractor (object):
+    def __init__(self, images, image_read_fn, tiling, pad_mode='reflect', downsample=None, postprocess_fn=None):
+        """
+
+        :param images: a list of images to read; these can be paths, IDs, objects
+        :param image_read_fn: an image reader function of the form `fn(image) -> np.array[H,W,C]`
+        :param tiling: a `tiling_scheme.TilingScheme` instance that describes how windows are to be extracted
+        `from the data
+        :param postprocess_fn: [optional] a post processing function of the form
+        `postprocess_fn(extracted_windows) -> transformed_extracted_windows` that applies some sort of transformation
+        to the extracted data
+        """
+        if tiling.ndim != 2:
+            raise ValueError('tiling should have 2 dimensions, not {}'.format(tiling.ndim))
+
+        self.tiling_scheme = tiling
+        self.N_images = len(images)
+
+        image_data = [image_read_fn(img) for img in images]
+
+        self.extractors = []
+        self.extractor_image_offsets = [0]
+
+        images_by_shape = []
+        shape = image_data[0].shape[:2]
+
+        for img in image_data:
+            img_shape = img.shape[:2]
+            if img_shape != shape:
+                self.__new_extractor(images_by_shape, shape, tiling, pad_mode, downsample, postprocess_fn)
+                images_by_shape = []
+                shape = img_shape
+            images_by_shape.append(img)
+        if len(images_by_shape) > 0:
+            self.__new_extractor(images_by_shape, shape, tiling, pad_mode, downsample, postprocess_fn)
+            images_by_shape = []
+
+        self.extractor_offsets = np.append(np.array([0]),
+                                           np.cumsum([len(ext) for ext in self.extractors]))
+        self.extractor_image_offsets = np.array(self.extractor_image_offsets)
+
+        self.N = self.extractor_offsets[-1]
+
+
+    def __new_extractor(self, images, shape, tiling, pad_mode, downsample, postprocess_fn):
+        extractor = ImageWindowExtractor(images, lambda x: x, tiling, pad_mode=pad_mode, downsample=downsample,
+                                         postprocess_fn=postprocess_fn)
+        self.extractors.append(extractor)
+        pos = self.extractor_image_offsets[-1]
+        self.extractor_image_offsets.append(pos + len(images))
+
+    def get_window(self, index):
+        return self.get_windows(np.array([index]))[0,...]
+
+    def get_windows(self, indices):
+        if not isinstance(indices, np.ndarray):
+            raise TypeError('indices must be a NumPy integer array, not a {}'.format(type(indices)))
+
+        # Get the indices of the extractors that cover these samples
+        extractor_indices = np.searchsorted(self.extractor_offsets, indices, side='right') - 1
+        # Get the offsets indices within the relevant extractors
+        sample_offsets = indices - self.extractor_offsets[extractor_indices]
+        # Use RLE to get runs of extractor indices
+        ext_runs = rle(extractor_indices)
+
+        # For each run:
+        windows = []
+        for run_i in six.moves.range(ext_runs.shape[0]):
+            start = ext_runs[run_i, 0]
+            end = ext_runs[run_i, 1]
+            extractor_i = ext_runs[run_i, 2]
+            # Get the extractor
+            extractor = self.extractors[extractor_i]
+            # Extract a run of windows
+            wins = extractor.get_windows(sample_offsets[start:end])
+            windows.append(wins)
+
+        return np.concatenate(windows, axis=0)
+
+    def get_windows_by_separate_coords(self, img_i, window_y, window_x):
+        """
+        img_i - array of shape (N) providing image indices
+        block_y - array of shape (N) providing block y-co-ordinate
+        block_x - array of shape (N) providing block x-co-ordinate
+        """
+        # Get the indices of the extractors that cover these samples
+        extractor_indices = np.searchsorted(self.extractor_image_offsets, img_i, side='right') - 1
+        # Get the offsets indices within the relevant extractors
+        image_offsets = img_i - self.extractor_image_offsets[extractor_indices]
+        # Use RLE to get runs of extractor indices
+        ext_runs = rle(extractor_indices)
+
+        # For each run:
+        windows = []
+        for run_i in six.moves.range(ext_runs.shape[0]):
+            start = ext_runs[run_i, 0]
+            end = ext_runs[run_i, 1]
+            extractor_i = ext_runs[run_i, 2]
+            # Get the extractor
+            extractor = self.extractors[extractor_i]
+            # Extract a run of windows
+            wins = extractor.get_windows_by_separate_coords(image_offsets[start:end],
+                                                            window_y[start:end], window_x[start:end])
+            windows.append(wins)
+
+        return np.concatenate(windows, axis=0)
+
+    def get_windows_by_coords(self, coords):
+        """
+        coords - array of shape (N,3) where each row is (image_index, block_y, block_x)
+        """
+        window_x = coords[:,2]
+        window_y = coords[:,1]
+        img_i = coords[:,0]
+        return self.get_windows_by_separate_coords(img_i, window_y, window_x)
+
+    def __len__(self):
+        return self.N
+
+    def __getitem__(self, index):
+        if isinstance(index, (int, long)):
+            return self.get_window(index)
+        elif isinstance(index, slice):
+            indices = np.arange(*index.indices(self.N))
+            return self.get_windows(indices)
+        elif isinstance(index, np.ndarray):
+            return self.get_windows(index)
+        else:
+            raise TypeError('index must be an int, a slice or a numpy array')
+
+    def batch_iterator(self, batchsize, shuffle_rng=None):
+        """
+        `batch_iterator` method for support batch iterator protocol. Returns an iterator that
+        generates mini-batches extracted from `self`
+
+        :param batchsize: the mini-batch size
+        :param shuffle_rng: [optional] a random number generator used to shuffle the order in which image windows
+        are extracted
+        :return: an iterator that yields mini-batch lists of the form `[batch_of_windows]`
+        """
+        indices = np.arange(self.N)
+        if shuffle_rng is not None:
+            shuffle_rng.shuffle(indices)
+        for start_idx in range(0, self.N, batchsize):
+            yield [self[indices[start_idx:start_idx + batchsize]]]
 
 
 class ImageWindowAssembler (object):
@@ -252,7 +385,10 @@ class ImageWindowAssembler (object):
         block_x = coords[:,2] * self.tiling.step_shape[1]
         block_y = coords[:,1] * self.tiling.step_shape[0]
         img_i = coords[:,0]
-        for i in xrange(coords.shape[0]):
+        self.set_windows_by_separate_coords(img_i, block_y, block_x, X)
+
+    def set_windows_by_separate_coords(self, img_i, block_y, block_x, X):
+        for i in xrange(img_i.shape[0]):
             self.X[img_i[i], :,
                    block_y[i]:block_y[i]+self.tiling.tile_shape[0],
                    block_x[i]:block_x[i]+self.tiling.tile_shape[1]] = X[i,:,:,:]
@@ -283,7 +419,41 @@ class ImageWindowAssembler (object):
 
 
 
+def rle(x):
+    """
+    Run length encoding of an array `x`
+    :param x: the array to encode
+    :return: a `(N,3)` array `y` where `y[:,0]` are the start indices of the runs, `y[:,1]` are the end indices
+        and `y[:,2]` are the values from `x` at the start indices
+    """
+    if len(x.shape) != 1:
+        raise ValueError('x should be 1-dimensional, not {}'.format(len(x.shape)))
+    # Get the indices of value changes
+    pos, = np.where(np.diff(x) != 0)
+    # Prepend 0, append length
+    pos = np.concatenate(([0], pos + 1, [len(x)]))
+    # Get the start, end, length and values
+    start = pos[:-1]
+    end = pos[1:]
+    values = x[pos[:-1]]
+    # Join
+    return np.concatenate([start[:, None], end[:, None], values[:, None]], axis=1)
+
+
 import unittest
+
+class Test_rle (unittest.TestCase):
+    def test_rle(self):
+        x = np.array([1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 2, 2, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9])
+        y = rle(x)
+        expected = np.array([
+            [0, 10, 1],
+            [10, 12, 0],
+            [12, 14, 2],
+            [14, 24, 9],
+        ])
+        self.assertTrue((y == expected).all())
+
 
 class Test_ImageWindowExtractor (unittest.TestCase):
     def test_simple(self):
@@ -311,15 +481,32 @@ class Test_ImageWindowExtractor (unittest.TestCase):
         self.assertTrue((wins.X[3,:,:,:] == img3b).all())
         self.assertEqual(wins.img_windows, (85, 85))
         self.assertEqual(wins.N, 85*85*4)
+        self.assertEqual(len(wins), 85*85*4)
 
         self.assertTrue((wins.get_windows_by_coords(np.array([[1, 34, 23]]))[0,:,:,:] ==
                          img1b[:,34:50,23:39]).all())
         self.assertTrue((wins.get_windows_by_coords(np.array([[1, 34, 23], [2, 9, 61]]))[:,:,:,:] ==
                          np.append(img1b[None,:,34:50,23:39], img2b[None,:,9:25, 61:77], axis=0)).all())
 
-        self.assertTrue((wins.get_windows(np.array([1*85*85+34*85+23]))[0,:,:,:] ==
+        a_i = 1*85*85+34*85+23
+        b_i = 2*85*85+9*85+61
+        # Single index; get_window() method
+        self.assertTrue((wins.get_window(a_i) ==
                          img1b[:,34:50,23:39]).all())
-        self.assertTrue((wins.get_windows(np.array([1*85*85+34*85+23, 2*85*85+9*85+61]))[:,:,:,:] ==
+        # Single index; index operator
+        self.assertTrue((wins[a_i] ==
+                         img1b[:,34:50,23:39]).all())
+        # Slice; index operator
+        self.assertTrue((wins[a_i:a_i+2] ==
+                         np.append(img1b[None,:,34:50,23:39], img1b[None,:,34:50,24:40], axis=0)).all())
+        # Single index in an array; get_windows() method
+        self.assertTrue((wins.get_windows(np.array([a_i]))[0,:,:,:] ==
+                         img1b[:,34:50,23:39]).all())
+        # Multiple indices in an array; get_windows() method
+        self.assertTrue((wins.get_windows(np.array([a_i, b_i]))[:,:,:,:] ==
+                         np.append(img1b[None,:,34:50,23:39], img2b[None,:,9:25, 61:77], axis=0)).all())
+        # Multiple indices in an array; index operator
+        self.assertTrue((wins[np.array([a_i, b_i])][:,:,:,:] ==
                          np.append(img1b[None,:,34:50,23:39], img2b[None,:,9:25, 61:77], axis=0)).all())
 
 
@@ -474,3 +661,58 @@ class Test_ImageWindowExtractor (unittest.TestCase):
         self.assertTrue(np.isclose(assembler.get_image(3)[8:-8,8:-8,:], img3_ds_us[8:-8,8:-8,:]).all())
 
 
+class Test_NonUniformImageWindowExtractor (unittest.TestCase):
+    def test_simple(self):
+        # Images of non-uniform size
+        img0 = np.random.uniform(0.0, 1.0, size=(100, 100, 3))
+        img1 = np.random.uniform(0.0, 1.0, size=(90, 110, 3))
+        img2 = np.random.uniform(0.0, 1.0, size=(95, 105, 3))
+        img3 = np.random.uniform(0.0, 1.0, size=(105, 95, 3))
+        img0b = np.rollaxis(img0, 2, 0)
+        img1b = np.rollaxis(img1, 2, 0)
+        img2b = np.rollaxis(img2, 2, 0)
+        img3b = np.rollaxis(img3, 2, 0)
+
+        wins = NonUniformImageWindowExtractor(images=[img0, img1, img2, img3], image_read_fn=lambda x: x,
+                                              tiling=tiling_scheme.TilingScheme(tile_shape=(16, 16), step_shape=(1, 1)))
+
+        N0 = 0
+        N1 = N0 + 85 * 85
+        N2 = N1 + 75 * 95
+        N3 = N2 + 80 * 90
+        N4 = N3 + 90 * 80
+
+        self.assertEqual(wins.tiling_scheme.tile_shape, (16, 16))
+        self.assertEqual(wins.N_images, 4)
+        self.assertEqual(wins.extractors[0].img_windows, (85, 85))
+        self.assertEqual(wins.extractors[1].img_windows, (75, 95))
+        self.assertEqual(wins.extractors[2].img_windows, (80, 90))
+        self.assertEqual(wins.extractors[3].img_windows, (90, 80))
+        self.assertEqual(wins.N, N4)
+        self.assertEqual(len(wins), N4)
+
+        self.assertTrue((wins.get_windows_by_coords(np.array([[1, 34, 23]]))[0, :, :, :] ==
+                         img1b[:, 34:50, 23:39]).all())
+        self.assertTrue((wins.get_windows_by_coords(np.array([[1, 34, 23], [2, 9, 61]]))[:, :, :, :] ==
+                         np.append(img1b[None, :, 34:50, 23:39], img2b[None, :, 9:25, 61:77], axis=0)).all())
+
+        a_i = N1 + 34 * 95 + 23
+        b_i = N2 + 9 * 90 + 61
+        # Single index; get_window() method
+        self.assertTrue((wins.get_window(a_i) ==
+                         img1b[:, 34:50, 23:39]).all())
+        # Single index; index operator
+        self.assertTrue((wins[a_i] ==
+                         img1b[:, 34:50, 23:39]).all())
+        # Slice; index operator
+        self.assertTrue((wins[a_i:a_i + 2] ==
+                         np.append(img1b[None, :, 34:50, 23:39], img1b[None, :, 34:50, 24:40], axis=0)).all())
+        # Single index in an array; get_windows() method
+        self.assertTrue((wins.get_windows(np.array([a_i]))[0, :, :, :] ==
+                         img1b[:, 34:50, 23:39]).all())
+        # Multiple indices in an array; get_windows() method
+        self.assertTrue((wins.get_windows(np.array([a_i, b_i]))[:, :, :, :] ==
+                         np.append(img1b[None, :, 34:50, 23:39], img2b[None, :, 9:25, 61:77], axis=0)).all())
+        # Multiple indices in an array; index operator
+        self.assertTrue((wins[np.array([a_i, b_i])][:, :, :, :] ==
+                         np.append(img1b[None, :, 34:50, 23:39], img2b[None, :, 9:25, 61:77], axis=0)).all())

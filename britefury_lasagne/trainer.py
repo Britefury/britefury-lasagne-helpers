@@ -7,7 +7,7 @@ try:
     from fuel.datasets import Dataset
 except ImportError:
     ShuffledScheme = SequentialScheme = DataStream = Dataset = NotImplemented
-
+from . import data_source
 
 VERBOSITY_NONE = None
 VERBOSITY_MINIMAL = 'minimal'
@@ -64,14 +64,6 @@ def get_network_input_var(network):
         raise ValueError('Could not find unique input layer in network')
 
 
-def _is_sequence_of_arrays(dataset):
-    if isinstance(dataset, (tuple, list)):
-        for x in dataset:
-            if not isinstance(x, np.ndarray):
-                return False
-        return True
-    return False
-
 def is_sequence_of_layers(xs):
     if isinstance(xs, (tuple, list)):
         for x in xs:
@@ -80,21 +72,6 @@ def is_sequence_of_layers(xs):
         return True
     return False
 
-
-
-def iterate_minibatches(data, batchsize, shuffle_rng=None):
-    N = data[0].shape[0]
-    for d1 in data[1:]:
-        assert d1.shape[0] == N
-    if shuffle_rng is not None:
-        indices = np.arange(N)
-        shuffle_rng.shuffle(indices)
-        for start_idx in range(0, N, batchsize):
-            excerpt = indices[start_idx:start_idx + batchsize]
-            yield [d[excerpt] for d in data]
-    else:
-        for start_idx in range(0, N, batchsize):
-            yield [d[start_idx:start_idx+batchsize] for d in data]
 
 
 def _default_epoch_log_fn(epoch_number, delta_time, train_str, val_str, test_str):
@@ -150,7 +127,6 @@ class Trainer (object):
 
         You must at least invoke the `train_with` method to set the training function.
         """
-        self.fuel_stream_xform_fn = None
         self.batch_xform_fn = None
 
         self.shuffle_rng = lasagne.random.get_rng()
@@ -349,15 +325,12 @@ class Trainer (object):
         self.set_state_fn = set_state_fn
         return self
 
-    def data_xform_fn(self, fuel_stream_xform_fn=None, batch_xform_fn=None):
+    def data_xform_fn(self, batch_xform_fn=None):
         """
-        Set data transformation functions; can provide a Fuel `DataStream` transformation function
-        and a batch transformation function.
+        Set data transformation function; can provide a batch transformation function.
 
-        :param fuel_stream_xform_fn: a function of the form `fn(stream) -> transformed_stream`
-        :param set_state_fn: a function of the form `fn(batch) -> transformed_batch`
+        :param batch_xform_fn: a function of the form `fn(batch) -> transformed_batch`
         """
-        self.fuel_stream_xform_fn = fuel_stream_xform_fn
         self.batch_xform_fn = batch_xform_fn
         return self
 
@@ -627,15 +600,18 @@ class Trainer (object):
             return False
 
 
-    def batch_iterator(self, dataset, batchsize, shuffle_rng=None):
+
+    def batch_loop(self, fn, data, batchsize, shuffle_rng=None, on_complete_batch=None, prepend_args=None):
         """
-        Create an iterator that will iterate over the data in `dataset` in mini-batches consisting of `batchsize`
-        samples, shuffled using the random number generate `shuffle_rng` if supplied or in-order if not.
+        Split data into mini-batches and apply a function to each mini-batch. The function is usually a
+        training or evaluation function.
 
         The data in `dataset` must take the form of:
 
-        - a list of numpy arrays - one for each variable (input/target/etc) - where each array
-            contains an entry for each sample in the complete dataset:
+        - a sequence of index-ables (see `is_indexable) (e.g. NumPy arrays) - one for each variable
+            (input/target/etc) - where each index-able contains an entry for each sample in the complete dataset.
+            The use of index-ables allows the use of NumPy arrays or other objects that support `__len__` and
+            `__getitem__`:
 
         >>> train_X = np.random.normal(size=(5000,3,24,24)) # 5000 samples, 3 channel 24x24 images
         >>> train_y = np.random.randint(0, 5, size=(5000,)) # 5000 samples, classes
@@ -646,9 +622,9 @@ class Trainer (object):
         >>> train_dataset = load_fuel_dataset
         >>> trainer.batch_iterator(train_dataset, batchsize=128, shuffle_rng=rng)
 
-        - a function of the form `fn(batchsize, shuffle_rng=None) -> iterator` that generates an
-            iterator, where the iterator generates mini-batches, where each mini-batch is of the form
-            of a list of numpy arrays:
+        - an object that has the method `dataset.batch_iterator(batchsize, shuffle_rng=None) -> iterator` or a callable of
+            the form `dataset(batchsize, shuffle_rng=None) -> iterator` that generates an iterator, where the iterator
+            generates mini-batches, where each mini-batch is of the form of a list of numpy arrays:
 
         >>> def make_iterator(X, y):
         ...     def iter_minibatches(batchsize, shuffle_rng=None):
@@ -662,69 +638,6 @@ class Trainer (object):
         ...             yield [batch_X, batch_y]
         ...     return iter_minibatches
         >>> trainer.batch_iterator(make_iterator(train_X, train_y), batchsize=128, shuffle_rng=rng)
-
-        :param dataset: the data to draw mini-batches from.
-        :param batchsize: the mini-batch size
-        :param shuffle_rng: [optional] a random number generator used to to shuffle the order of samples before
-            building mini-batches
-        :return: an iterator
-        """
-        if Dataset is not NotImplemented and isinstance(dataset, Dataset):
-            if shuffle_rng is not None:
-                train_scheme = ShuffledScheme(examples=dataset.num_examples, batch_size=batchsize, rng=shuffle_rng)
-            else:
-                train_scheme = SequentialScheme(examples=dataset.num_examples, batch_size=batchsize)
-            # Use `DataStream.default_stream`, otherwise the default transformers defined by the dataset *wont*
-            # be applied
-            stream = DataStream.default_stream(dataset=dataset, iteration_scheme=train_scheme)
-            if self.fuel_stream_xform_fn is not None:
-                stream = self.fuel_stream_xform_fn(stream)
-            return stream.get_epoch_iterator()
-        elif _is_sequence_of_arrays(dataset):
-            return iterate_minibatches(dataset, batchsize, shuffle_rng=shuffle_rng)
-        elif callable(dataset):
-            return dataset(batchsize, shuffle_rng=shuffle_rng)
-        else:
-            raise TypeError('dataset should be a fuel Dataset instance, list of arrays or a callable, not a {}'.format(
-                type(dataset)
-            ))
-
-
-    def batch_loop(self, fn, data, batchsize, shuffle_rng=None, on_complete_batch=None, prepend_args=None):
-        """
-        Split data into mini-batches and apply a function to each mini-batch. The function is usually a
-        training or evaluation function.
-
-        The dataset in `data` must take one of the following forms:
-        - a list of numpy arrays - one for each variable (input/target/etc) - where each array
-            contains an entry for each sample in the complete dataset:
-
-        >>> train_X = np.random.normal(size=(5000,3,24,24)) # 5000 samples, 3 channel 24x24 images
-        >>> train_y = np.random.randint(0, 5, size=(5000,)) # 5000 samples, classes
-        >>> trainer.batch_loop(train_function, [train_X, train_y], batchsize=128, shuffle_rng=rng)
-
-        - a Fuel Dataset instance:
-
-        >>> train_dataset = load_fuel_dataset
-        >>> trainer.batch_loop(train_function, train_dataset, batchsize=128, shuffle_rng=rng)
-
-        - a function of the form `fn(batchsize, shuffle_rng=None) -> iterator` that generates an
-            iterator, where the iterator generates mini-batches, where each mini-batch is of the form
-            of a list of numpy arrays:
-
-        >>> def make_iterator(X, y):
-        ...     def iter_minibatches(batchsize, shuffle_rng=None):
-        ...         indices = np.arange(X.shape[0])
-        ...         if shuffle_rng is not None:
-        ...             shuffle_rng.shuffle(indices)
-        ...         for i in range(0, indices.shape[0], batchsize):
-        ...             batch_ndx = indices[i:i+batchsize]
-        ...             batch_X = X[batch_ndx]
-        ...             batch_y = y[batch_ndx]
-        ...             yield [batch_X, batch_y]
-        ...     return iter_minibatches
-        >>> trainer.batch_loop(train_function, make_iterator(train_X, train_y),
-        ...                    batchsize=128, shuffle_rng=rng)
 
         :param fn: the function to call on each mini-batch of the form `function(batchX, batchY, ...) -> [outA, outB, ...]`
         :param data: the data to draw mini-batches from
@@ -740,7 +653,7 @@ class Trainer (object):
         n_samples_accum = 0
 
         # Train on each batch
-        for batch_i, batch in enumerate(self.batch_iterator(data, batchsize, shuffle_rng=shuffle_rng)):
+        for batch_i, batch in enumerate(data_source.batch_iterator(data, batchsize, shuffle_rng=shuffle_rng)):
             # Aply batch transformation function
             if self.batch_xform_fn is not None:
                 batch = self.batch_xform_fn(batch)
