@@ -84,6 +84,8 @@ class ImageWindowExtractor (data_source.AbstractBatchIterable):
 
         self.N = self.N_images * self.img_windows[0] * self.img_windows[1]
 
+        self.shape = (self.N, self.n_channels) + self.tiling.tile_shape
+
 
     def assembler(self, image_n_channels=None, n_images=None, upsample_order=0, pad_mode='reflect', img_dtype=None):
         image_n_channels = image_n_channels or self.n_channels
