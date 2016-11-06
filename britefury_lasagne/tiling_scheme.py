@@ -1,3 +1,4 @@
+import math
 
 def _dim_pad_crop(source_size, dest_size):
     diff = dest_size - source_size
@@ -33,6 +34,13 @@ def _downsample_pad_or_crop(pc, factor, downsampled_size, req_size):
         return start, req - downsampled_size - start
     else:
         return None
+
+def round_up_shape(shape, tile_shape):
+    if len(shape) != len(tile_shape):
+        raise ValueError('shape ({}) and tile_shape ({}) should have the same number of dimensions'.format(
+            len(shape), len(tile_shape)
+        ))
+    return tuple([int(math.ceil(float(s) / t) * t) for s, t in zip(shape, tile_shape)])
 
 
 TILING_MODE_VALID = 'valid'
