@@ -1,9 +1,78 @@
+import sys
 import numpy as np
 import collections
+import multiprocessing.managers
+import cPickle
 
 import joblib
 
 from . import data_source
+
+SharedConstant = collections.namedtuple('SharedConstant', ['value'])
+_SharedRef = collections.namedtuple('_SharedRef', ['key'])
+
+_MAX_PRIMTIVE_ARG_SIZE = 16384
+
+
+def _is_primitive(x):
+    if isinstance(x, (bool, int, long, float, str, unicode)):
+        return True
+    elif isinstance(x, tuple):
+        for y in x:
+            if not _is_primitive(y):
+                return False
+        return True
+    else:
+        return False
+
+
+def _deserialise_args(shared_objects, local_objects, serialised_args):
+    args = []
+    for arg in serialised_args:
+        if isinstance(arg, _SharedRef):
+            key = arg.key
+            if key in local_objects:
+                x = local_objects[key]
+            else:
+                x = cPickle.loads(shared_objects[arg.key])
+                local_objects[arg.key] = x
+        else:
+            x = arg
+        args.append(x)
+    return tuple(args)
+
+
+def _serialise_args(shared_objects, args):
+    serialised_args = []
+    for arg in args:
+        if isinstance(arg, SharedConstant):
+            value = arg.value
+            key = id(value)
+            if key not in shared_objects:
+                shared_objects[key] = cPickle.dumps(value)
+            ref = _SharedRef(key=key)
+            serialised = ref
+        else:
+            serialised = arg
+        serialised_args.append(serialised)
+    return tuple(serialised_args)
+
+
+def _apply_async_helper(shared_objects, fn, *serialised_args):
+    try:
+        try:
+            local_objects = getattr(_apply_async_helper, '__local_objects')
+        except AttributeError:
+            local_objects = {}
+            setattr(_apply_async_helper, '__local_objects', local_objects)
+
+        args = _deserialise_args(shared_objects, local_objects, serialised_args)
+
+        return fn(*args)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise
 
 
 class WorkerPool (object):
@@ -23,10 +92,14 @@ class WorkerPool (object):
 
         :param processes: (default=1) number of processes to start
         """
+        self.__manager = multiprocessing.managers.SyncManager()
+        self.__manager.start()
+        self.__shared_objects = self.__manager.dict({})
         self.__pool = joblib.pool.MemmapingPool(processes=processes)
 
     def _apply_async(self, fn, args):
-        return self.__pool.apply_async(fn, args)
+        serialised_args = _serialise_args(self.__shared_objects, args)
+        return self.__pool.apply_async(_apply_async_helper, (self.__shared_objects, fn) + serialised_args)
 
     def work_stream(self, task_generator, task_buffer_size=20):
         """
@@ -119,12 +192,16 @@ class _WorkStreamParallelBatchIterator (data_source.AbstractBatchIterable):
 
     def batch_iterator(self, batchsize, shuffle_rng=None):
         def task_generator():
-            indices = np.arange(self.__num_samples)
-            if shuffle_rng is not None:
-                shuffle_rng.shuffle(indices)
-            for i in range(0, self.__num_samples, batchsize):
-                batch_ndx = indices[i:i + batchsize]
-                yield _extract_batch_by_index_from_sequence_of_iterables, (self.__dataset, batch_ndx)
+            try:
+                indices = np.arange(self.__num_samples)
+                if shuffle_rng is not None:
+                    shuffle_rng.shuffle(indices)
+                for i in range(0, self.__num_samples, batchsize):
+                    batch_ndx = indices[i:i + batchsize]
+                    yield _extract_batch_by_index_from_sequence_of_iterables, (SharedConstant(self.__dataset), batch_ndx)
+            except Exception as e:
+                print('Caught exception {}'.format(e))
+                raise
 
         ws = self.__pool.work_stream(task_generator(), task_buffer_size=self.__batch_buffer_size)
         return ws.retrieve_iter()
