@@ -156,7 +156,7 @@ class ResNet50Model (imagenet.AbstractImageNetModel):
         return image_tensor + self.mean_image[None,:,:,:]
 
     @classmethod
-    def build_network(cls, input_shape=None):
+    def build_network_final_layer(cls, input_shape=None, **kwargs):
         if input_shape is None:
             # Default input shape: 3 channel images of size 224 x 224.
             input_shape = (3, 224, 224)
