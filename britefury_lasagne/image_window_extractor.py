@@ -2,16 +2,16 @@ import six
 import numpy as np
 import skimage.util
 import skimage.transform
-from . import tiling_scheme, data_source
+from . import tiling_scheme
 
 
 
-class ImageWindowExtractor (data_source.AbstractBatchIterable):
+class ImageWindowExtractor (object):
     """
     Extracts windows from a list of images according to a tiling scheme.
 
     Is index-able and has a `batch_iterator` method so can be passed as a dataset to
-    `data_source.batch_iterator`, `Trainer.train`, etc.
+    `batch.batch_iterator`, `Trainer.train`, etc.
     """
     def __init__(self, images, image_read_fn, tiling, pad_mode='reflect', downsample=None, postprocess_fn=None):
         """
