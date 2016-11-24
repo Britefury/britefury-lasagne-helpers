@@ -2,7 +2,7 @@ import sys
 import time
 import numpy as np
 import lasagne
-from .batch import batch_iterator
+from .batch import batch_iterator, dataset_length
 
 
 VERBOSITY_NONE = None
@@ -34,8 +34,8 @@ def _default_val_improved_func(new_val_results, best_val_results):
     return new_val_results[0] < best_val_results[0]
 
 
-def _batch_loop(fn, data, batchsize, shuffle_rng=None,
-                on_complete_batch=None, prepend_args=None):
+def _batch_loop(fn, data, batchsize, progress_iter_func, desc,
+                shuffle_rng=None, on_complete_batch=None, prepend_args=None):
     """
     Batch loop helper function.
     Split data into mini-batches and apply a function to each mini-batch.
@@ -52,6 +52,11 @@ def _batch_loop(fn, data, batchsize, shuffle_rng=None,
         The data to draw mini-batches from
     batchsize: int
         The number of samples per mini-batch
+    progress_iter_func: callable
+        A tqdm style progress-reporting iterator wrapper
+    desc: string
+        A description to pass as the `desc` keyword argument to
+        `progress_iter_func`
     shuffle_rng: `None` or a `np.random.RandomState`
         A random number generator used to shuffle the order of samples. If one
         is not provided samples will be processed in-order (e.g.
@@ -73,10 +78,19 @@ def _batch_loop(fn, data, batchsize, shuffle_rng=None,
     # Accumulator for results and number of samples
     results_accum = None
     n_samples_accum = 0
+    n_samples = dataset_length(data)
+    if n_samples is not None:
+        n_batches = n_samples // batchsize
+        if (n_samples % batchsize) > 0:
+            n_batches += 1
+    else:
+        n_batches = None
+
+    batch_iter = batch_iterator(data, batchsize, shuffle_rng=shuffle_rng)
 
     # Train on each batch
-    for batch_i, batch in enumerate(batch_iterator(data, batchsize,
-                                                   shuffle_rng=shuffle_rng)):
+    for batch_i, batch in progress_iter_func(enumerate(batch_iter),
+                                             total=n_batches, desc=desc):
         # Get number of samples in batch; can vary
         batch_n = batch[0].shape[0]
 
@@ -113,6 +127,12 @@ def _batch_loop(fn, data, batchsize, shuffle_rng=None,
         results_accum = [r / n_samples_accum for r in results_accum]
 
     return results_accum
+
+
+def _identity_iter_func(x, *args, **kwargs):
+    # Identity helper iter function for use when the `progress_iter_func`
+    # argument is `None`.
+    return x
 
 
 class TrainingFailedException (Exception):
@@ -187,10 +207,10 @@ def train(train_set, val_set=None, test_set=None, train_batch_func=None,
           batchsize=128, num_epochs=100, min_epochs=None,
           val_improve_patience=1, val_improve_patience_factor=0.0,
           epoch_log_func=None, pre_epoch_callback=None,
-          post_epoch_callback=None, verbosity=VERBOSITY_EPOCH,
-          log_stream=sys.stdout, log_final_result=True, get_state_func=None,
-          set_state_func=None, layer_to_restore=None,
-          updates_to_restore=None, shuffle_rng=None):
+          post_epoch_callback=None, progress_iter_func=None,
+          verbosity=VERBOSITY_EPOCH, log_stream=sys.stdout,
+          log_final_result=True, get_state_func=None, set_state_func=None,
+          layer_to_restore=None, updates_to_restore=None, shuffle_rng=None):
     """
     Neural network training loop, designed to be as generic as possible
     in order to simplify implementing a Theano/Lasagne training loop.
@@ -309,6 +329,13 @@ def train(train_set, val_set=None, test_set=None, train_batch_func=None,
         argument, the mean training results as the second and the mean
         validation results as the third if validation was performed this
         epoch, `None` otherwise.
+    progress_iter_func: [optional] callable
+        `progress_iter_func(iterator, total=total, desc=desc)`
+        A `tqdm` style function that will be passed the iterator that
+        generates training batches along with the total number of batches and
+        the description that will be `'Train'`. By passing either
+        `tqdm.tqdm` or `tqdm.tqdm_notebook` as this argument you can have the
+        training loop display a progress bar.
     verbosity: one of `VERBOSITY_NONE` (`None`), `VERBOSITY_MINIMAL`
         (`'minimal'`), `VERBOSITY_EPOCH` (`'epoch'`) or `VERBOSITY_BATCH`
         (`'batch'`)
@@ -392,6 +419,8 @@ def train(train_set, val_set=None, test_set=None, train_batch_func=None,
         epoch_log_func = _default_epoch_log_func
     if shuffle_rng is None:
         shuffle_rng = lasagne.random.get_rng()
+    if progress_iter_func is None:
+        progress_iter_func = _identity_iter_func
 
     if min_epochs is None:
         # min_epochs not provided; default to num_epochs
@@ -548,7 +577,9 @@ def train(train_set, val_set=None, test_set=None, train_batch_func=None,
         # Train
         train_epoch_args = (epoch,) if train_pass_epoch_number else None
         train_results = _batch_loop(train_batch_func, train_set,
-                                    batchsize, shuffle_rng,
+                                    batchsize, progress_iter_func,
+                                    'Epoch {}'.format(epoch + 1),
+                                    shuffle_rng,
                                     on_complete_batch=on_train_batch,
                                     prepend_args=train_epoch_args)
         if verbosity == VERBOSITY_BATCH:
@@ -585,8 +616,8 @@ def train(train_set, val_set=None, test_set=None, train_batch_func=None,
                 on_val_batch = None
 
             validation_results = _batch_loop(
-                    eval_batch_func, val_set, batchsize,
-                    on_complete_batch=on_val_batch)
+                    eval_batch_func, val_set, batchsize, _identity_iter_func,
+                    '', on_complete_batch=on_val_batch)
             if verbosity == VERBOSITY_BATCH:
                 _log('\r')
 
@@ -616,6 +647,7 @@ def train(train_set, val_set=None, test_set=None, train_batch_func=None,
                         on_test_batch = None
                     test_results = _batch_loop(
                             eval_batch_func, test_set, batchsize,
+                            _identity_iter_func, '',
                             on_complete_batch=on_test_batch)
                     if verbosity == VERBOSITY_BATCH:
                         _log('\r')
