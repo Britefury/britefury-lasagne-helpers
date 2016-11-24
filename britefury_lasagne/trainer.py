@@ -8,7 +8,6 @@ from .batch import batch_iterator, dataset_length
 VERBOSITY_NONE = None
 VERBOSITY_MINIMAL = 'minimal'
 VERBOSITY_EPOCH = 'epoch'
-VERBOSITY_BATCH = 'batch'
 
 
 # Helper functions
@@ -35,7 +34,7 @@ def _default_val_improved_func(new_val_results, best_val_results):
 
 
 def _batch_loop(fn, data, batchsize, progress_iter_func, desc,
-                shuffle_rng=None, on_complete_batch=None, prepend_args=None):
+                shuffle_rng=None, prepend_args=None):
     """
     Batch loop helper function.
     Split data into mini-batches and apply a function to each mini-batch.
@@ -61,8 +60,6 @@ def _batch_loop(fn, data, batchsize, progress_iter_func, desc,
         A random number generator used to shuffle the order of samples. If one
         is not provided samples will be processed in-order (e.g.
         during validation and test).
-    on_complete_batch: [optional] callback `on_complete_batch(batch_index)`
-        A callback to invoke after completing each mini-batch
     prepend_args: [optional] tuple
         Arguments to prepend to the arguments passed to `fn`
 
@@ -118,9 +115,6 @@ def _batch_loop(fn, data, batchsize, progress_iter_func, desc,
                 for i in range(len(results_accum)):
                     results_accum[i] += batch_results[i]
         n_samples_accum += batch_n
-
-        if on_complete_batch is not None:
-            on_complete_batch(batch_i)
 
     # Divide by the number of training examples used to compute mean
     if results_accum is not None:
@@ -337,8 +331,7 @@ def train(train_set, val_set=None, test_set=None, train_batch_func=None,
         `tqdm.tqdm` or `tqdm.tqdm_notebook` as this argument you can have the
         training loop display a progress bar.
     verbosity: one of `VERBOSITY_NONE` (`None`), `VERBOSITY_MINIMAL`
-        (`'minimal'`), `VERBOSITY_EPOCH` (`'epoch'`) or `VERBOSITY_BATCH`
-        (`'batch'`)
+        (`'minimal'`) or `VERBOSITY_EPOCH` (`'epoch'`)
         How much information is written to the log stream describing progress.
         If `VERBOSITY_NONE` then nothing is reported.
         If `VERBOSITY_MINIMAL` then after each epoch a '.' is written if no
@@ -347,11 +340,8 @@ def train(train_set, val_set=None, test_set=None, train_batch_func=None,
         the score does improve.
         If `VERBOSITY_EPOCH` then a single line report is produced for each
         epoch.
-        If `VERBOSITY_BATCH` then in addition to a single line per epoch, each
-        batch is reported with the text '\r[train <epoch>]',
-        '\r[val <epoch>]' or '\r[test <epoch>]' for training, validation
-        and test batches respectively. As a consequence, the line below
-        the last epoch log line shows the progress through the batches.
+        Per-batch reporting can be achieved via the `progress_iter_func`
+        argument.
     log_stream: a file like object (default=sys.stdout)
         The stream to which progress is logged. If `None`, no loggins is done.
     log_final_result: bool (default=True)
@@ -490,10 +480,6 @@ def train(train_set, val_set=None, test_set=None, train_batch_func=None,
         log_stream.write(text)
         log_stream.flush()
 
-    def _log_batch(task, batch_index):
-        if verbosity == VERBOSITY_BATCH:
-            _log('\r[{} {}]'.format(task, batch_index))
-
     def _should_validate(epoch_index):
         return val_interval is None or epoch_index % val_interval == 0
 
@@ -568,22 +554,13 @@ def train(train_set, val_set=None, test_set=None, train_batch_func=None,
 
         # TRAIN
         # Log start of training
-        if verbosity == VERBOSITY_BATCH:
-            def on_train_batch(batch_index):
-                _log_batch('train', batch_index)
-        else:
-            on_train_batch = None
-
         # Train
         train_epoch_args = (epoch,) if train_pass_epoch_number else None
         train_results = _batch_loop(train_batch_func, train_set,
                                     batchsize, progress_iter_func,
                                     'Epoch {}'.format(epoch + 1),
                                     shuffle_rng,
-                                    on_complete_batch=on_train_batch,
                                     prepend_args=train_epoch_args)
-        if verbosity == VERBOSITY_BATCH:
-            _log('\r')
 
         if train_epoch_results_check_func is not None:
             reason = train_epoch_results_check_func(epoch, train_results)
@@ -609,18 +586,9 @@ def train(train_set, val_set=None, test_set=None, train_batch_func=None,
         if val_set is not None and _should_validate(epoch):
             validated = True
 
-            if verbosity == VERBOSITY_BATCH:
-                def on_val_batch(batch_index):
-                    _log_batch('val', batch_index)
-            else:
-                on_val_batch = None
-
             validation_results = _batch_loop(
                     eval_batch_func, val_set, batchsize, _identity_iter_func,
-                    '', on_complete_batch=on_val_batch)
-            if verbosity == VERBOSITY_BATCH:
-                _log('\r')
-
+                    '')
             if best_validation_results is None or \
                     val_improved_func(validation_results,
                                       best_validation_results):
@@ -640,26 +608,18 @@ def train(train_set, val_set=None, test_set=None, train_batch_func=None,
 
                 if test_set is not None:
                     tested = True
-                    if verbosity == VERBOSITY_BATCH:
-                        def on_test_batch(batch_index):
-                            _log_batch('test', batch_index)
-                    else:
-                        on_test_batch = None
                     test_results = _batch_loop(
                             eval_batch_func, test_set, batchsize,
-                            _identity_iter_func, '',
-                            on_complete_batch=on_test_batch)
-                    if verbosity == VERBOSITY_BATCH:
-                        _log('\r')
+                            _identity_iter_func, '')
         else:
             validation_results = None
 
         if not tested and test_set is not None and val_set is None:
             tested = True
-            test_results = _batch_loop(eval_batch_func, test_set,
-                                       batchsize, None)
+            test_results = _batch_loop(eval_batch_func, test_set, batchsize,
+                                       _identity_iter_func, '')
 
-        if verbosity == VERBOSITY_BATCH or verbosity == VERBOSITY_EPOCH:
+        if verbosity == VERBOSITY_EPOCH:
             _log_epoch_results(epoch, time.time() - epoch_start_time,
                                train_results,
                                validation_results if validated else None,
