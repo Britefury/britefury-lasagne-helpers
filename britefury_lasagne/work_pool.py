@@ -6,7 +6,7 @@ import cPickle
 
 import joblib
 
-from . import data_source
+from . import batch
 
 SharedConstant = collections.namedtuple('SharedConstant', ['value'])
 _SharedRef = collections.namedtuple('_SharedRef', ['key'])
@@ -130,13 +130,13 @@ class WorkerPool (object):
         preparation is split among multiple processes. The batch iterator returned is suitable for passing to methods
         of the `Trainer` class.
 
-        NOTE: `dataset` should be a sequence of index-ables (see `data_source.is_indexable` for definition);
+        NOTE: `dataset` should be a sequence of array-likes (see `batch.is_arraylike` for definition);
         batch iterators cannot be passed here.
         ALSO NOTE: the objects that are passed in the sequence `dataset` SHOULD BE LIGHTWEIGHT as they must
         be passed to the child processes via serialization/deserialization, so you most probably *don't* want
         to pass large NumPy arrays here.
 
-        PLEASE NOTE that the types of the index-ables in dataset *must* be defined in the top-level of a module so
+        PLEASE NOTE that the types of the array-likes in dataset *must* be defined in the top-level of a module so
         that the pickling system can locate them.
 
         Can be used with trainer like so:
@@ -163,18 +163,18 @@ class WorkerPool (object):
         ...
         ... trainer.train(batch_iterator, None, None, batchsize=128)
 
-        :param dataset:  sequence of index-ables (see `data_source.is_indexable) (e.g. NumPy arrays are indexables
+        :param dataset:  sequence of array-likes (see `batch.is_arraylike) (e.g. NumPy arrays are array-likes
         but should not normally be used here for performance and memory usage reasons) - one for each variable
-        (input/target/etc) - where each index-able contains an entry for each sample in the complete dataset.
-        The use of index-ables allows the use of NumPy arrays or other objects that support `__len__` and
+        (input/target/etc) - where each array-like contains an entry for each sample in the complete dataset.
+        The use of array-likes allows the use of NumPy arrays or other objects that support `__len__` and
         `__getitem__`
         :param batch_buffer_size: the number of batches that will be buffered up to ensure that data is always
         ready when requested
         :return: a `ParallelBatchIterator` instance that has a `batch_iterator` method and is therefore suitable
         for use with methods of the `Trainer` class.
         """
-        if not data_source.is_sequence_of_indexables(dataset):
-            raise TypeError('dataset must be a sequence of index-ables (each one should support __len__ and '
+        if not batch.is_sequence_of_arraylike(dataset):
+            raise TypeError('dataset must be a sequence of array-likes (each one should support __len__ and '
                             '__getitem__ where __getitem__ should take a numpy int array as an index')
         return _WorkStreamParallelBatchIterator(dataset, batch_buffer_size, self)
 
@@ -182,10 +182,10 @@ class WorkerPool (object):
 def _extract_batch_by_index_from_sequence_of_iterables(data, batch_indices):
     return [d[batch_indices] for d in data]
 
-class _WorkStreamParallelBatchIterator (data_source.AbstractBatchIterable):
+class _WorkStreamParallelBatchIterator (object):
     def __init__(self, dataset, batch_buffer_size, pool):
         self.__dataset = dataset
-        self.__num_samples = data_source.indexables_length(dataset)
+        self.__num_samples = batch.length_of_arraylikes_in_sequence(dataset)
         self.__batch_buffer_size = batch_buffer_size
         self.__pool = pool
 
