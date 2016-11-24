@@ -1,4 +1,5 @@
-import math
+import math, itertools
+import skimage.util
 
 def _dim_pad_crop(source_size, dest_size):
     diff = dest_size - source_size
@@ -212,10 +213,52 @@ class DataTilingScheme (object):
         data_pad_or_crop = [_downsample_pad_or_crop(pc, f, s, r)   for pc, f, s, r in zip(self.data_pad_or_crop, factor, data_shape, self.req_data_shape)]
         return DataTilingScheme(data_shape, tile_shape, step_shape, data_pad_or_crop=data_pad_or_crop)
 
+    def view_as_windows(self, X, pad_mode='reflect'):
+        # Apply padding and cropping
+        cropping = self.cropping_as_slices
+        if cropping is not None:
+            X = X[cropping]
+        padding = self.padding
+        if padding is not None:
+            X = skimage.util.pad(X, padding, mode=pad_mode)
+        return skimage.util.view_as_windows(X, self.tile_shape, self.step_shape)
+
     def __repr__(self):
         return 'DataTilingScheme(ndim={}, data_shape={}, tile_shape={}, step_shape={}, data_pad_or_crop={}, tiles={}, req_data_shape={})'.format(
             self.ndim, self.data_shape, self.tile_shape, self.step_shape, self.data_pad_or_crop, self.tiles, self.req_data_shape
         )
+
+
+def assemble_non_overlapping_windows(x):
+    """
+    Assemble an image from non-overlapping windows. Essentially the inverse of `skimage.util.view_as_windows` where the tile shape
+    and the step shape are the same.
+
+    `X` should be an N-dimensional array, where N is divisible by 2. The first N/2 dimensions represent the tile co-ordinates within
+    the grid of tiles and the second N/2 dimensions represent the pixel co-ordinates within the tiles
+
+    :param X: an array, e.g. for 2D tiles `X` would be 4-dimensional of shape `(tile_y, tile_x, pixel_y, pixel_x)`
+    :return: assembled image as an array, with half the number of dimensions as `X`
+    """
+    n = len(x.shape)
+    if (n % 2) != 0:
+        raise ValueError('x should have an even number of dimensions; it has {}'.format(n))
+
+    grid_shape = x.shape[:n//2]
+    tile_shape = x.shape[n//2:]
+
+    # Re-order the dimensions that so that each tile co-ordinate is followed by each pixel co-ordinate
+    # (tile_0, tile_1, ..., pixel_0, pixel_1, ...) -> (tile_0, pixel_0, tile_1, pixel_1, ...)
+    dim_order = []
+    for i in range(n//2):
+        dim_order.append(i)
+        dim_order.append(n//2 + i)
+    x = x.transpose(dim_order)
+
+    # Concatenate tile co-ordinate dimensions with pixel co-ordinate dimensions
+    x = x.reshape(tuple([t * p for t, p in zip(grid_shape, tile_shape)]))
+
+    return x
 
 
 import unittest
