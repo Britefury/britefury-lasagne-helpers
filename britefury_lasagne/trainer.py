@@ -33,7 +33,7 @@ def _default_val_improved_func(new_val_results, best_val_results):
     return new_val_results[0] < best_val_results[0]
 
 
-def _batch_loop(fn, data, batchsize, progress_iter_func, desc,
+def _batch_loop(fn, data, batchsize, progress_iter_func=None, desc='',
                 shuffle_rng=None, prepend_args=None):
     """
     Batch loop helper function.
@@ -75,19 +75,24 @@ def _batch_loop(fn, data, batchsize, progress_iter_func, desc,
     # Accumulator for results and number of samples
     results_accum = None
     n_samples_accum = 0
-    n_samples = dataset_length(data)
-    if n_samples is not None:
-        n_batches = n_samples // batchsize
-        if (n_samples % batchsize) > 0:
-            n_batches += 1
-    else:
-        n_batches = None
 
+    # Create the iterator that will generate mini-batches
     batch_iter = batch_iterator(data, batchsize, shuffle_rng=shuffle_rng)
 
+    # If `progress_iter_func` is not `None`, apply it
+    if progress_iter_func is not None:
+        n_samples = dataset_length(data)
+        if n_samples is not None:
+            n_batches = n_samples // batchsize
+            if (n_samples % batchsize) > 0:
+                n_batches += 1
+        else:
+            n_batches = None
+        batch_iter = progress_iter_func(batch_iter, total=n_batches, desc=desc,
+                                        leave=False)
+
     # Train on each batch
-    for batch_i, batch in progress_iter_func(enumerate(batch_iter),
-                                             total=n_batches, desc=desc):
+    for batch_i, batch in enumerate(batch_iter):
         # Get number of samples in batch; can vary
         batch_n = batch[0].shape[0]
 
@@ -121,12 +126,6 @@ def _batch_loop(fn, data, batchsize, progress_iter_func, desc,
         results_accum = [r / n_samples_accum for r in results_accum]
 
     return results_accum
-
-
-def _identity_iter_func(x, *args, **kwargs):
-    # Identity helper iter function for use when the `progress_iter_func`
-    # argument is `None`.
-    return x
 
 
 class TrainingFailedException (Exception):
@@ -409,8 +408,6 @@ def train(train_set, val_set=None, test_set=None, train_batch_func=None,
         epoch_log_func = _default_epoch_log_func
     if shuffle_rng is None:
         shuffle_rng = lasagne.random.get_rng()
-    if progress_iter_func is None:
-        progress_iter_func = _identity_iter_func
 
     if min_epochs is None:
         # min_epochs not provided; default to num_epochs
@@ -558,8 +555,8 @@ def train(train_set, val_set=None, test_set=None, train_batch_func=None,
         train_epoch_args = (epoch,) if train_pass_epoch_number else None
         train_results = _batch_loop(train_batch_func, train_set,
                                     batchsize, progress_iter_func,
-                                    'Epoch {}'.format(epoch + 1),
-                                    shuffle_rng,
+                                    'Epoch {} train'.format(epoch + 1),
+                                    shuffle_rng=shuffle_rng,
                                     prepend_args=train_epoch_args)
 
         if train_epoch_results_check_func is not None:
@@ -586,9 +583,9 @@ def train(train_set, val_set=None, test_set=None, train_batch_func=None,
         if val_set is not None and _should_validate(epoch):
             validated = True
 
-            validation_results = _batch_loop(
-                    eval_batch_func, val_set, batchsize, _identity_iter_func,
-                    '')
+            validation_results = _batch_loop(eval_batch_func, val_set,
+                    batchsize, progress_iter_func,
+                    'Epoch {} val'.format(epoch + 1))
             if best_validation_results is None or \
                     val_improved_func(validation_results,
                                       best_validation_results):
@@ -608,16 +605,17 @@ def train(train_set, val_set=None, test_set=None, train_batch_func=None,
 
                 if test_set is not None:
                     tested = True
-                    test_results = _batch_loop(
-                            eval_batch_func, test_set, batchsize,
-                            _identity_iter_func, '')
+                    test_results = _batch_loop(eval_batch_func, test_set,
+                            batchsize, progress_iter_func,
+                            'Epoch {} test'.format(epoch + 1))
         else:
             validation_results = None
 
         if not tested and test_set is not None and val_set is None:
             tested = True
             test_results = _batch_loop(eval_batch_func, test_set, batchsize,
-                                       _identity_iter_func, '')
+                                       progress_iter_func,
+                                       'Epoch {} test'.format(epoch + 1))
 
         if verbosity == VERBOSITY_EPOCH:
             _log_epoch_results(epoch, time.time() - epoch_start_time,
