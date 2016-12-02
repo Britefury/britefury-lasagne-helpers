@@ -1,9 +1,37 @@
 import six
 import numpy as np
+from functools import partial
 import theano
 import theano.tensor as T
 import lasagne
-from . import trainer, dnn_objective, data_source
+from . import trainer, dnn_objective, batch
+
+
+def _is_sequence_of_layers(xs):
+    if isinstance(xs, (tuple, list)):
+        for x in xs:
+            if not isinstance(x, lasagne.layers.Layer):
+                return False
+        return True
+    return False
+
+def _get_network_params(layer, updates=None):
+    layer_params = lasagne.layers.get_all_params(layer)
+
+    if updates is not None:
+        if isinstance(updates, dict):
+            params = list(updates.keys())
+        elif isinstance(updates, (list, tuple)):
+            params = [upd[0] for upd in updates]
+        else:
+            raise TypeError('updates should be a dict mapping parameter to update expression '
+                            'or a sequence of tuples of (parameter, update_expression) pairs')
+
+        for p in params:
+            if p not in layer_params:
+                layer_params.append(p)
+
+    return layer_params
 
 
 class BasicDNN (object):
@@ -37,24 +65,21 @@ class BasicDNN (object):
         self.objectives = objectives
 
         if score_objective is None:
-            self.score_objectives = objectives[0:1]
-        elif isinstance(score_objective, dnn_objective.AbstractObjective):
+            score_objective = objectives[0]
+        else:
             if score_objective not in objectives:
                 raise ValueError('score_objective not in objectives')
-            self.score_objectives = [score_objective]
-        elif isinstance(score_objective, (list, tuple)):
-            self.score_objectives = list(score_objective)
-        else:
-            raise TypeError('score_objective must be None, a AbstractObjective instance or a sequence of AbstractObjective instances')
+
+        self.score_objective = score_objective
 
         if params_source is not None:
             if isinstance(params_source, six.string_types):
                 self.load_params(params_source)
             elif isinstance(params_source, BasicDNN):
                 self.set_param_values(params_source.get_param_values())
-            elif isinstance(params_source, lasagne.layers.Layer) or trainer.is_sequence_of_layers(params_source):
-                params_in = trainer.get_network_params(params_source)
-                values = trainer.get_param_values(params_in)
+            elif isinstance(params_source, lasagne.layers.Layer) or _is_sequence_of_layers(params_source):
+                params_in = _get_network_params(params_source)
+                values = [p.get_value() for p in params_in]
                 self.set_param_values(values)
             else:
                 raise TypeError('params_source must be a string containing a path, a `BasicDNN` instance, '
@@ -66,7 +91,7 @@ class BasicDNN (object):
         self.train_results_indices = []
         eval_results = []
         self.eval_results_indices = []
-        self.score_objective_indices = [self.objectives.index(s_o) for s_o in self.score_objectives]
+        self.score_objective_index = self.objectives.index(score_objective)
         predictions = []
         for obj_res in self.objective_results:
             self.train_results_indices.append(len(train_results))
@@ -98,20 +123,13 @@ class BasicDNN (object):
         # Compile a function computing the predicted probability
         self._predict_fn = theano.function(input_vars, predictions)
 
-
-        # Construct a trainer
-        self.trainer = trainer.Trainer()
-        # Provide with training function
-        self.trainer.train_with(train_batch_fn=self._train_fn, train_log_fn=self._train_log,
-                                train_epoch_results_check_fn=self._check_train_epoch_results)
-        # Evaluate with evaluation function, the second output value - error rate - is used for scoring
-        self.trainer.evaluate_with(eval_batch_fn=self._val_fn, eval_log_fn=self._eval_log,
-                                   validation_score_fn=self._score)
-        # Set the epoch logging function
-        self.trainer.report(epoch_log_fn=self._epoch_log)
-        # Tell the trainer to store parameters when the validation score (error rate) is best
-        # self.trainer.retain_best_scoring_state_of_updates(updates)
-        self.trainer.retain_best_scoring_state_of_network(final_layers)
+        # Construct a training function
+        self.train = partial(trainer.train,
+                             train_batch_func=self._train_fn, train_log_func=self._train_log,
+                             train_epoch_results_check_func=self._check_train_epoch_results,
+                             eval_batch_func=self._val_fn, eval_log_func=self._eval_log,
+                             val_improved_func=self._score_improved,
+                             epoch_log_func=self._epoch_log, layer_to_restore=final_layers)
 
 
     def load_params(self, params_path, include_updates=False):
@@ -120,7 +138,12 @@ class BasicDNN (object):
         :param params_path: path of file from which to load parameters
         """
         updates = self._updates if include_updates else None
-        trainer.load_model(params_path, self.final_layers, updates=updates)
+        with np.load(params_path) as f:
+            param_values = [f['arr_%d' % i] for i in range(len(f.files))]
+
+        params = _get_network_params(self.final_layers, updates=updates)
+        for p, v in zip(params, param_values):
+            p.set_value(v)
 
     def save_params(self, params_path, include_updates=False):
         """
@@ -128,7 +151,10 @@ class BasicDNN (object):
         :param params_path: path of file to save parameters to
         """
         updates = self._updates if include_updates else None
-        trainer.save_model(params_path, self.final_layers, updates=updates)
+        params = _get_network_params(self.final_layers, updates=updates)
+        param_values = [p.get_value() for p in params]
+        np.savez(params_path, *param_values)
+
 
     def get_param_values(self, include_updates=False):
         """
@@ -136,7 +162,7 @@ class BasicDNN (object):
         :return: a list of NumPy arrays
         """
         params = self.get_params(include_updates)
-        return trainer.get_param_values(params)
+        return [p.get_value() for p in params]
 
     def set_param_values(self, values, include_updates=False):
         """
@@ -148,7 +174,8 @@ class BasicDNN (object):
         :param values: a list of NumPy arrays that contain the values for the parameters
         """
         params = self.get_params(include_updates)
-        trainer.set_param_values(params, values)
+        for p, v in zip(params, values):
+            p.set_value(v)
 
     def get_params(self, include_updates=False):
         """
@@ -157,7 +184,7 @@ class BasicDNN (object):
         :return: a list of Theano shared variables
         """
         updates = self._updates if include_updates else None
-        return trainer.get_network_params(self.final_layers, updates=updates)
+        return _get_network_params(self.final_layers, updates=updates)
 
     def get_param_names(self, include_updates=False):
         """
@@ -188,22 +215,19 @@ class BasicDNN (object):
             eval_items.append(obj_res.eval_results_str_fn(eval_results[i:j]))
         return ', '.join(eval_items)
 
-    def _score(self, results):
-        score = None
-        for obj_ndx, obj in zip(self.score_objective_indices, self.score_objectives):
-            i, j = self.eval_results_indices[obj_ndx:obj_ndx+2]
-            obj_res = results[i:j]
-            obj_score = obj.score_to_minimise(obj_res)
-            score = (score + obj_score) if score is not None else obj_score
-        return score
+    def _score_improved(self, new_results, best_so_far):
+        i, j = self.eval_results_indices[self.score_objective_index:self.score_objective_index+2]
+        new_obj_res = new_results[i:j]
+        best_obj_res = best_so_far[i:j]
+        return self.score_objective.score_improved(new_obj_res, best_obj_res)
 
     def _epoch_log(self, epoch_number, delta_time, train_str, val_str, test_str):
         """
-        Epoch logging callback, passed to the `self.trainer.report()`
+        Epoch logging callback; used to build the training function`
         """
         epoch_n = (epoch_number + 1) if epoch_number is not None else '<final>'
         items = []
-        items.append('Epoch {}/{} took {:.2f}s:'.format(epoch_n, self.trainer.num_epochs, delta_time))
+        items.append('Epoch {} took {:.2f}s:'.format(epoch_n, delta_time))
         items.append('  TRAIN ')
 
         if train_str is not None:
@@ -224,8 +248,7 @@ class BasicDNN (object):
         """
         Evaluate the network, returning its predictions
 
-        :param X: input data, in the same form as described in the `Trainer.train`, `Trainer.batch_loop`
-        and `Trainer.batch_iterator` methods
+        :param X: input data, in the same form as described in the `Trainer.train` and `Trainer.batch_iterator` methods
         :param batchsize: the mini-batch size
         :param batch_xform_fn: optional pre-process function to transform mini-batches of input data before passing
         them to the network prediction function
@@ -234,10 +257,10 @@ class BasicDNN (object):
         probabilities
         """
         y = []
-        for batch in data_source.batch_iterator(X, batchsize, None):
+        for batch_data in batch.batch_iterator(X, batchsize, None):
             if batch_xform_fn is not None:
-                batch = batch_xform_fn(batch)
-            y_batch = self._predict_fn(*batch)
+                batch_data = batch_xform_fn(batch_data)
+            y_batch = self._predict_fn(*batch_data)
             y.append(y_batch)
         return [np.concatenate(chn, axis=0) for chn in zip(*y)]
 
@@ -271,8 +294,7 @@ class BasicClassifierDNN (BasicDNN):
         """
         Evaluate the network, returning its predictions
 
-        :param X: input data, in the same form as described in the `Trainer.train`, `Trainer.batch_loop`
-        and `Trainer.batch_iterator` methods
+        :param X: input data, in the same form as described in the `trainer.train` and `batch.batch_iterator` functions
         :param batchsize: the mini-batch size
         :param batch_xform_fn: optional pre-process function to transform mini-batches of input data before passing
         them to the network prediction function

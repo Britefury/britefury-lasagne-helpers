@@ -1,9 +1,78 @@
+import sys
 import numpy as np
 import collections
+import multiprocessing.managers
+import cPickle
 
 import joblib
 
-from . import data_source
+from . import batch
+
+SharedConstant = collections.namedtuple('SharedConstant', ['value'])
+_SharedRef = collections.namedtuple('_SharedRef', ['key'])
+
+_MAX_PRIMTIVE_ARG_SIZE = 16384
+
+
+def _is_primitive(x):
+    if isinstance(x, (bool, int, long, float, str, unicode)):
+        return True
+    elif isinstance(x, tuple):
+        for y in x:
+            if not _is_primitive(y):
+                return False
+        return True
+    else:
+        return False
+
+
+def _deserialise_args(shared_objects, local_objects, serialised_args):
+    args = []
+    for arg in serialised_args:
+        if isinstance(arg, _SharedRef):
+            key = arg.key
+            if key in local_objects:
+                x = local_objects[key]
+            else:
+                x = cPickle.loads(shared_objects[arg.key])
+                local_objects[arg.key] = x
+        else:
+            x = arg
+        args.append(x)
+    return tuple(args)
+
+
+def _serialise_args(shared_objects, args):
+    serialised_args = []
+    for arg in args:
+        if isinstance(arg, SharedConstant):
+            value = arg.value
+            key = id(value)
+            if key not in shared_objects:
+                shared_objects[key] = cPickle.dumps(value)
+            ref = _SharedRef(key=key)
+            serialised = ref
+        else:
+            serialised = arg
+        serialised_args.append(serialised)
+    return tuple(serialised_args)
+
+
+def _apply_async_helper(shared_objects, fn, *serialised_args):
+    try:
+        try:
+            local_objects = getattr(_apply_async_helper, '__local_objects')
+        except AttributeError:
+            local_objects = {}
+            setattr(_apply_async_helper, '__local_objects', local_objects)
+
+        args = _deserialise_args(shared_objects, local_objects, serialised_args)
+
+        return fn(*args)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise
 
 
 class WorkerPool (object):
@@ -23,10 +92,14 @@ class WorkerPool (object):
 
         :param processes: (default=1) number of processes to start
         """
+        self.__manager = multiprocessing.managers.SyncManager()
+        self.__manager.start()
+        self.__shared_objects = self.__manager.dict({})
         self.__pool = joblib.pool.MemmapingPool(processes=processes)
 
     def _apply_async(self, fn, args):
-        return self.__pool.apply_async(fn, args)
+        serialised_args = _serialise_args(self.__shared_objects, args)
+        return self.__pool.apply_async(_apply_async_helper, (self.__shared_objects, fn) + serialised_args)
 
     def work_stream(self, task_generator, task_buffer_size=20):
         """
@@ -57,13 +130,13 @@ class WorkerPool (object):
         preparation is split among multiple processes. The batch iterator returned is suitable for passing to methods
         of the `Trainer` class.
 
-        NOTE: `dataset` should be a sequence of index-ables (see `data_source.is_indexable` for definition);
+        NOTE: `dataset` should be a sequence of array-likes (see `batch.is_arraylike` for definition);
         batch iterators cannot be passed here.
         ALSO NOTE: the objects that are passed in the sequence `dataset` SHOULD BE LIGHTWEIGHT as they must
         be passed to the child processes via serialization/deserialization, so you most probably *don't* want
         to pass large NumPy arrays here.
 
-        PLEASE NOTE that the types of the index-ables in dataset *must* be defined in the top-level of a module so
+        PLEASE NOTE that the types of the array-likes in dataset *must* be defined in the top-level of a module so
         that the pickling system can locate them.
 
         Can be used with trainer like so:
@@ -90,18 +163,18 @@ class WorkerPool (object):
         ...
         ... trainer.train(batch_iterator, None, None, batchsize=128)
 
-        :param dataset:  sequence of index-ables (see `data_source.is_indexable) (e.g. NumPy arrays are indexables
+        :param dataset:  sequence of array-likes (see `batch.is_arraylike) (e.g. NumPy arrays are array-likes
         but should not normally be used here for performance and memory usage reasons) - one for each variable
-        (input/target/etc) - where each index-able contains an entry for each sample in the complete dataset.
-        The use of index-ables allows the use of NumPy arrays or other objects that support `__len__` and
+        (input/target/etc) - where each array-like contains an entry for each sample in the complete dataset.
+        The use of array-likes allows the use of NumPy arrays or other objects that support `__len__` and
         `__getitem__`
         :param batch_buffer_size: the number of batches that will be buffered up to ensure that data is always
         ready when requested
         :return: a `ParallelBatchIterator` instance that has a `batch_iterator` method and is therefore suitable
         for use with methods of the `Trainer` class.
         """
-        if not data_source.is_sequence_of_indexables(dataset):
-            raise TypeError('dataset must be a sequence of index-ables (each one should support __len__ and '
+        if not batch.is_sequence_of_arraylike(dataset):
+            raise TypeError('dataset must be a sequence of array-likes (each one should support __len__ and '
                             '__getitem__ where __getitem__ should take a numpy int array as an index')
         return _WorkStreamParallelBatchIterator(dataset, batch_buffer_size, self)
 
@@ -109,22 +182,26 @@ class WorkerPool (object):
 def _extract_batch_by_index_from_sequence_of_iterables(data, batch_indices):
     return [d[batch_indices] for d in data]
 
-class _WorkStreamParallelBatchIterator (data_source.AbstractBatchIterable):
+class _WorkStreamParallelBatchIterator (object):
     def __init__(self, dataset, batch_buffer_size, pool):
         self.__dataset = dataset
-        self.__num_samples = data_source.indexables_length(dataset)
+        self.__num_samples = batch.length_of_arraylikes_in_sequence(dataset)
         self.__batch_buffer_size = batch_buffer_size
         self.__pool = pool
 
 
     def batch_iterator(self, batchsize, shuffle_rng=None):
         def task_generator():
-            indices = np.arange(self.__num_samples)
-            if shuffle_rng is not None:
-                shuffle_rng.shuffle(indices)
-            for i in range(0, self.__num_samples, batchsize):
-                batch_ndx = indices[i:i + batchsize]
-                yield _extract_batch_by_index_from_sequence_of_iterables, (self.__dataset, batch_ndx)
+            try:
+                indices = np.arange(self.__num_samples)
+                if shuffle_rng is not None:
+                    shuffle_rng.shuffle(indices)
+                for i in range(0, self.__num_samples, batchsize):
+                    batch_ndx = indices[i:i + batchsize]
+                    yield _extract_batch_by_index_from_sequence_of_iterables, (SharedConstant(self.__dataset), batch_ndx)
+            except Exception as e:
+                print('Caught exception {}'.format(e))
+                raise
 
         ws = self.__pool.work_stream(task_generator(), task_buffer_size=self.__batch_buffer_size)
         return ws.retrieve_iter()

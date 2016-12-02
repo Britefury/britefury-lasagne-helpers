@@ -2,16 +2,16 @@ import six
 import numpy as np
 import skimage.util
 import skimage.transform
-from . import tiling_scheme, data_source
+from . import tiling_scheme
 
 
 
-class ImageWindowExtractor (data_source.AbstractBatchIterable):
+class ImageWindowExtractor (object):
     """
     Extracts windows from a list of images according to a tiling scheme.
 
     Is index-able and has a `batch_iterator` method so can be passed as a dataset to
-    `data_source.batch_iterator`, `Trainer.train`, etc.
+    `batch.batch_iterator`, `Trainer.train`, etc.
     """
     def __init__(self, images, image_read_fn, tiling, pad_mode='reflect', downsample=None, postprocess_fn=None):
         """
@@ -83,6 +83,8 @@ class ImageWindowExtractor (data_source.AbstractBatchIterable):
         self.img_windows = ds_tiling.tiles
 
         self.N = self.N_images * self.img_windows[0] * self.img_windows[1]
+
+        self.shape = (self.N, self.n_channels) + self.tiling.tile_shape
 
 
     def assembler(self, image_n_channels=None, n_images=None, upsample_order=0, pad_mode='reflect', img_dtype=None):
@@ -331,11 +333,14 @@ class ImageWindowAssembler (object):
     def __init__(self, image_shape, image_n_channels, n_images, tiling, upsample=None, upsample_order=0,
                  pad_mode='reflect', img_dtype=np.float32):
         """
-
-        :param images: a list of images to read; these can be paths, IDs, objects
-        :param image_read_fn: an image reader function of the form `fn(image) -> np.array[H,W,C]`
-        :param tiling: a `tiling_scheme.TilingScheme` instance that describes how windows are to be extracted
-        `from the data
+        :param image_shape: the shape of the images that are to be generated
+        :param image_n_channels: the number of channels
+        :param n_images: the number of images to be generated
+        :param tiling: the tiling scheme used to generate the tiles
+        :param upsample: [default=`None`] the upsampling factor
+        :param upsample_order: [default=`0`] the interpolation order used for upsampling
+        :param pad_mode: [default=`'reflect'`] the padding mode used to invert the effect of cropping
+        :param img_dtype: [default=`np.float32`] the data type used for storing the images
         """
         self.N_images = n_images
         self.output_img_shape = image_shape
