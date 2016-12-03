@@ -152,10 +152,28 @@ class ImageWindowExtractor (object):
         elif isinstance(i, slice):
             indices = np.arange(*i.indices(self.N))
             return self.get_windows(indices)
+        elif isinstance(i, tuple) and len(i) == 3 and \
+                isinstance(i[0], slice) and isinstance(i[1], slice) and isinstance(i[2], slice):
+            img_i = np.arange(*i[0].indices(self.N_images))
+            window_y = np.arange(*i[1].indices(self.img_windows[0]))
+            window_x = np.arange(*i[2].indices(self.img_windows[1]))
+            n_x = len(window_x)
+            n_y = len(window_y)
+            n_i = len(img_i)
+            window_x = np.tile(window_x, (n_x * n_i,))
+            window_y = np.tile(np.repeat(window_y, n_x, axis=0), (n_i,))
+            img_i = np.repeat(img_i, n_x * n_y, axis=0)
+            return self.get_windows_by_separate_coords(img_i, window_y, window_x)
         elif isinstance(i, np.ndarray):
-            return self.get_windows(i)
+            if len(i.shape) == 1:
+                return self.get_windows(i)
+            elif len(i.shape) == 2 and i.shape[1] == 3:
+                return self.get_windows_by_coords(i)
+            else:
+                raise TypeError('if i is a NumPy array, its shape must be (N,) or (N,3), not {}'.format(i.shape))
         else:
-            raise TypeError('i must be an int/long, a slice or a NumPy integer array, not a {}'.format(type(i)))
+            raise TypeError('i must be an int/long, a slice, a tuple of 3 slices or a (N,) NumPy integer array, '
+                            'or a (N,3) NumPy array, not a {}'.format(type(i)))
 
 
 
@@ -513,6 +531,19 @@ class Test_ImageWindowExtractor (unittest.TestCase):
         # Multiple indices in an array; index operator
         self.assertTrue((wins[np.array([a_i, b_i])][:,:,:,:] ==
                          np.append(img1b[None,:,34:50,23:39], img2b[None,:,9:25, 61:77], axis=0)).all())
+        # Multiple indices in a (N,3) array; index operator
+        self.assertTrue((wins[np.array([[1, 34, 23], [2, 9, 61]])][:,:,:,:] ==
+                         np.append(img1b[None,:,34:50,23:39], img2b[None,:,9:25, 61:77], axis=0)).all())
+
+        # Tuple of slices; index operator
+        tos_wins = wins[1:3, 5:20, 15:40]
+        tos_imgs = [img1b, img2b]
+        for i in range(2):
+            for y in range(15):
+                for x in range(25):
+                    self.assertTrue(
+                        (tos_wins[i * 15 * 25 + y * 25 + x, :, :, :] ==
+                         tos_imgs[i][:, 5 + y:21 + y, 15 + x:31 + x]).all())
 
 
     def test_stepped(self):
