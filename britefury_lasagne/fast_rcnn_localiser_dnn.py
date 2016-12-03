@@ -44,7 +44,7 @@ class FastRCNNLocaliser (basic_dnn.BasicDNN):
             ))
 
         if box_mask_var is not None:
-            box_mask_expr = T.repeat(box_mask_var, 4, axis=1)
+            box_mask_expr = T.tile(box_mask_var, (1,4,1,1))
         else:
             box_mask_expr = None
 

@@ -149,7 +149,8 @@ def compute_coverage(anchor_grid_origin, anchor_grid_cell_size, anchor_grid_shap
 
 
 def ground_truth_boxes_to_y(anchor_grid_origin, anchor_grid_cell_size, anchor_grid_shape, anchor_box_sizes,
-                            img_shape, ground_truth_boxes, coverage_lower_threshold=0.3, coverage_upper_threshold=0.7):
+                            img_shape, ground_truth_boxes, box_classes=None, coverage_lower_threshold=0.3,
+                            coverage_upper_threshold=0.7):
     """
     Transform a list of ground truth boxes into training targets for a localiser RCNN.
 
@@ -163,6 +164,9 @@ def ground_truth_boxes_to_y(anchor_grid_origin, anchor_grid_cell_size, anchor_gr
     :param img_shape: The shape of the image as a `(2,)` array of the form `(height, width)`
     :param ground_truth_boxes: the list of ground-truth boxes as a `(M,4)` array, where each row
     is of the form `(centre_y, centre_x, height, width)`
+    :param box_classes: [optional] the list of ground-truth box classes as a `(M,)` integer array, where each
+    element is the class index of the corresponding box; note that class indices must be >= 1, as 0 is reserved
+    as the background class
     :param coverage_lower_threshold: if the intersection-over-union coverage of an anchor box by a ground truth
     box is less than or equal to this value then the box is not said to contain an object; 'objectness'
     classification of 0
@@ -215,10 +219,14 @@ def ground_truth_boxes_to_y(anchor_grid_origin, anchor_grid_cell_size, anchor_gr
         raise ValueError('ground_truth_boxes must have 2 dimensions, not {}'.format(len(ground_truth_boxes.shape)))
     if ground_truth_boxes.shape[1] != 4:
         raise ValueError('ground_truth_boxes must have shape (N,4), not {}'.format(ground_truth_boxes.shape))
+    if box_classes is not None:
+        box_classes = np.array(box_classes, dtype=np.int32)
+        if box_classes.min() < 1:
+            raise ValueError('All box classes should be >= 1')
 
     n_anchors = anchor_box_sizes.shape[0]
     # y_shape =
-    y_objectness = np.zeros((n_anchors,) + anchor_grid_shape, dtype=int)
+    y_objectness = np.zeros((n_anchors,) + anchor_grid_shape, dtype=np.int32)
     y_obj_mask = np.zeros((n_anchors,) + anchor_grid_shape, dtype=np.float32)
     y_coverage = np.zeros((n_anchors,) + anchor_grid_shape, dtype=float)
     y_rel_boxes = np.zeros((4, n_anchors) + anchor_grid_shape, dtype=np.float32)
@@ -248,35 +256,40 @@ def ground_truth_boxes_to_y(anchor_grid_origin, anchor_grid_cell_size, anchor_gr
             xstart = anchor_range[1,0]
             xend = anchor_range[1,1]
 
-            # Compute the y and x coords of the centres of the anchor boxes
-            anchor_cen_y = anchor_grid_origin[0] + np.arange(ystart, yend) * anchor_grid_cell_size[0]
-            anchor_cen_x = anchor_grid_origin[1] + np.arange(xstart, xend) * anchor_grid_cell_size[1]
+            if yend >= ystart and xend >= xstart:
+                # Compute the y and x coords of the centres of the anchor boxes
+                anchor_cen_y = anchor_grid_origin[0] + np.arange(ystart, yend) * anchor_grid_cell_size[0]
+                anchor_cen_x = anchor_grid_origin[1] + np.arange(xstart, xend) * anchor_grid_cell_size[1]
 
-            # Get the dimensions of this anchor
-            h = anchor_box_sizes[anchor_i,0]
-            w = anchor_box_sizes[anchor_i,1]
+                # Get the dimensions of this anchor
+                h = anchor_box_sizes[anchor_i,0]
+                w = anchor_box_sizes[anchor_i,1]
 
-            i_over_u = compute_coverage(anchor_grid_origin, anchor_grid_cell_size, anchor_grid_shape, anchor_range,
-                                        anchor_box_sizes[anchor_i, :], gt_lower, gt_upper, gt_area)
+                i_over_u = compute_coverage(anchor_grid_origin, anchor_grid_cell_size, anchor_grid_shape, anchor_range,
+                                            anchor_box_sizes[anchor_i, :], gt_lower, gt_upper, gt_area)
 
-            improve = i_over_u > y_coverage[anchor_i, ystart:yend, xstart:xend]
+                improve = (i_over_u > y_coverage[anchor_i, ystart:yend, xstart:xend]) & \
+                          (i_over_u > coverage_upper_threshold)
 
-            box_rel_y = (gt_box[0] - anchor_cen_y) * 2.0 / h
-            box_rel_x = (gt_box[1] - anchor_cen_x) * 2.0 / w
-            box_rel_h = np.log(gt_box[2] / h)
-            box_rel_w = np.log(gt_box[3] / w)
+                box_rel_y = (gt_box[0] - anchor_cen_y) * 2.0 / h
+                box_rel_x = (gt_box[1] - anchor_cen_x) * 2.0 / w
+                box_rel_h = np.log(gt_box[2] / h)
+                box_rel_w = np.log(gt_box[3] / w)
 
-            y_rel_boxes[0, anchor_i, ystart:yend, xstart:xend][improve] = box_rel_y[:,None].repeat(xend-xstart,
-                                                                                                   axis=1)[improve]
-            y_rel_boxes[1, anchor_i, ystart:yend, xstart:xend][improve] = box_rel_x[None,:].repeat(yend-ystart,
-                                                                                                   axis=0)[improve]
-            y_rel_boxes[2, anchor_i, ystart:yend, xstart:xend][improve] = box_rel_h
-            y_rel_boxes[3, anchor_i, ystart:yend, xstart:xend][improve] = box_rel_w
+                y_rel_boxes[0, anchor_i, ystart:yend, xstart:xend][improve] = box_rel_y[:,None].repeat(xend-xstart,
+                                                                                                       axis=1)[improve]
+                y_rel_boxes[1, anchor_i, ystart:yend, xstart:xend][improve] = box_rel_x[None,:].repeat(yend-ystart,
+                                                                                                       axis=0)[improve]
+                y_rel_boxes[2, anchor_i, ystart:yend, xstart:xend][improve] = box_rel_h
+                y_rel_boxes[3, anchor_i, ystart:yend, xstart:xend][improve] = box_rel_w
 
-            y_coverage[anchor_i, ystart:yend, xstart:xend] = np.maximum(y_coverage[anchor_i, ystart:yend,
-                                                                        xstart:xend], i_over_u)
+                y_coverage[anchor_i, ystart:yend, xstart:xend] = np.maximum(y_coverage[anchor_i, ystart:yend,
+                                                                            xstart:xend], i_over_u)
 
-    y_objectness[y_coverage > coverage_upper_threshold] = 1
+                if box_classes is None:
+                    y_objectness[anchor_i, ystart:yend, xstart:xend][improve] = 1
+                else:
+                    y_objectness[anchor_i, ystart:yend, xstart:xend][improve] = box_classes[gt_box_i]
 
     for anchor_i in range(anchor_ranges.shape[0]):
         val = valid_ranges[anchor_i]
@@ -401,6 +414,50 @@ class TestCase_RCNNLocaliserData (unittest.TestCase):
         self.assertTrue(np.allclose(y_rel[:,1,12,18], b1b))
         self.assertTrue(np.allclose(y_rel[:,2,12,18], b1c))
         self.assertTrue(np.allclose(y_rel[:,3,12,18], b1d))
+
+
+    def test_ground_truth_boxes_to_y_with_box_classes(self):
+        y_obj1, y_obj_mask, y_rel, y_box_mask = ground_truth_boxes_to_y(anchor_grid_origin=np.array([8,8]),
+                                                       anchor_grid_cell_size=np.array([16,16]),
+                                                       anchor_grid_shape=(30,40),
+                                                       anchor_box_sizes=np.array([[16,16], [8,8], [16,8], [8,16]]),
+                                                       img_shape=np.array([480,640]),
+                                                       ground_truth_boxes=np.array([
+                                                           [20,30,15,18]
+                                                       ]),
+                                                       coverage_lower_threshold=0.1,
+                                                       coverage_upper_threshold=0.2)
+
+        y_obj2, y_obj_mask, y_rel, y_box_mask = ground_truth_boxes_to_y(anchor_grid_origin=np.array([8,8]),
+                                                       anchor_grid_cell_size=np.array([16,16]),
+                                                       anchor_grid_shape=(30,40),
+                                                       anchor_box_sizes=np.array([[16,16], [8,8], [16,8], [8,16]]),
+                                                       img_shape=np.array([480,640]),
+                                                       ground_truth_boxes=np.array([
+                                                           [200,300,8,12]
+                                                       ]),
+                                                       coverage_lower_threshold=0.1,
+                                                       coverage_upper_threshold=0.2)
+
+        y_obj, y_obj_mask, y_rel, y_box_mask = ground_truth_boxes_to_y(anchor_grid_origin=np.array([8,8]),
+                                                       anchor_grid_cell_size=np.array([16,16]),
+                                                       anchor_grid_shape=(30,40),
+                                                       anchor_box_sizes=np.array([[16,16], [8,8], [16,8], [8,16]]),
+                                                       img_shape=np.array([480,640]),
+                                                       ground_truth_boxes=np.array([
+                                                           [20,30,15,18], [200,300,8,12]
+                                                       ]),
+                                                       box_classes=np.array([1, 2]),
+                                                       coverage_lower_threshold=0.1,
+                                                       coverage_upper_threshold=0.2)
+
+        y_obj_expected = np.zeros_like(y_obj1)
+        y_obj_expected[y_obj1 > 0] = 1
+        y_obj_expected[y_obj2 > 0] = 2
+
+        # y_obj should be == 1 where coverage > 0.2
+        self.assertTrue((y_obj == y_obj_expected).all())
+
 
 
     def test_ground_truth_boxes_to_y_outside_screen_bounds(self):
