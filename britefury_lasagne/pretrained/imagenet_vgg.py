@@ -13,13 +13,15 @@
 # and
 # http://s3.amazonaws.com/lasagne/recipes/pretrained/imagenet/vgg19.pkl
 
-import sys, os, pickle
+import functools
+import numpy as np
 from lasagne.layers import InputLayer, DenseLayer, NonlinearityLayer, DropoutLayer,\
-    Pool2DLayer, Conv2DLayer, DilatedConv2DLayer, PadLayer
+    Pool2DLayer, Conv2DLayer, DilatedConv2DLayer, PadLayer, NINLayer
 from lasagne.nonlinearities import softmax
 import lasagne
 from britefury_lasagne import config
 from . import imagenet
+from .. import util
 
 
 
@@ -39,7 +41,7 @@ class AbstractVGGModel (imagenet.AbstractImageNetModel):
         return image_tensor + self.mean_value[None,:,None,None]
 
     @classmethod
-    def set_param_values(cls, final_layer, param_values):
+    def set_param_values(cls, final_layer, network, param_values):
         params = lasagne.layers.get_all_params(final_layer)
         n_params = len(params)
         if n_params < len(param_values):
@@ -51,26 +53,47 @@ class AbstractVGGModel (imagenet.AbstractImageNetModel):
         dilated_conv_layers = [lyr for lyr in layers if isinstance(lyr, DilatedConv2DLayer)]
         # Get the weight parameters of the dilated conv layers
         dilated_conv_Ws = {lyr.W for lyr in dilated_conv_layers}
+        # Get the weight parameter of fc6
+        fc6 = network['fc6']
+        fc6_W = fc6.W
 
         # Transpose (flip) the first two dimensions of the parameter value weights of
         # dilated conv weights as dilated convolution weight tensors are of the shape
         # (input_chn, output_chn, height, width) rather than
         # (output_chn, input_chn, height, width)
+        #
+        # If the parameter is the weights of the layer 'fc6' and the number of dimensions don't
+        # match, this indicates that the dense layer has been converted to a convolution.
         for i, (param, value) in enumerate(zip(params, param_values)):
+            if value.ndim != param.ndim and param is fc6_W:
+                value = value.transpose(1, 0).reshape((4096, 512, 7, 7))
+                param_values[i] = value
             if param in dilated_conv_Ws:
-                param_values[i] = value.transpose(1, 0, 2, 3)
+                value = value.transpose(1, 0, 2, 3)
+                param_values[i] = value
 
         lasagne.layers.set_all_param_values(final_layer, param_values)
 
     @classmethod
-    def conv_2d_layer(cls, cur_layer, name, num_filters, filter_size, dilation=1):
+    def conv_2d_layer(cls, cur_layer, name, num_filters, filter_size, dilation=1, pad=1):
         if dilation == 1:
             cur_layer = Conv2DLayer(cur_layer, num_filters=num_filters, filter_size=filter_size,
-                                    pad=1, flip_filters=False, name=name)
+                                    pad=pad, flip_filters=False, name=name)
         else:
-            cur_layer = PadLayer(cur_layer, width=dilation, name='{}_pad'.format(name))
+            if pad == 0:
+                pass
+            elif pad == 1:
+                cur_layer = PadLayer(cur_layer, width=dilation, name='{}_pad'.format(name))
+            else:
+                raise ValueError('Only padding of 0 or 1 supported, not {}'.format(pad))
             cur_layer = DilatedConv2DLayer(cur_layer, num_filters=num_filters, filter_size=filter_size,
                                            flip_filters=False, dilation=dilation, name=name)
+
+        return cur_layer, dilation
+
+    @classmethod
+    def nin_layer(cls, cur_layer, name, num_units, dilation=1, nonlinearity=lasagne.nonlinearities.rectify):
+        cur_layer = NINLayer(cur_layer, num_units=num_units, nonlinearity=nonlinearity, name=name)
 
         return cur_layer, dilation
 
@@ -100,7 +123,8 @@ class AbstractVGGModel (imagenet.AbstractImageNetModel):
 
 class VGG16Model (AbstractVGGModel):
     @classmethod
-    def build_network_final_layer(cls, input_shape=None, pool_layers_to_expand=None, **kwargs):
+    def build_network_final_layer(cls, input_shape=None, pool_layers_to_expand=None,
+                                  full_conv=False, **kwargs):
         if pool_layers_to_expand is None:
             pool_layers_to_expand = set()
 
@@ -148,7 +172,7 @@ class VGG16Model (AbstractVGGModel):
         # 2x2 max-pooling; will reduce size from 14x14 to 7x7
         net, dilation = cls.pool_2d_layer(net, 'pool5', 2, dilation, pool_layers_to_expand)
 
-        if dilation == 1:
+        if dilation == 1 and not full_conv:
             # Dense layer, 4096 units
             net = DenseLayer(net, num_units=4096, name='fc6')
             # 50% dropout (only applied during training, turned off during prediction)
@@ -163,6 +187,21 @@ class VGG16Model (AbstractVGGModel):
             net = DenseLayer(net, num_units=1000, nonlinearity=None, name='fc8')
             # Softmax non-linearity that will generate probabilities
             net = NonlinearityLayer(net, softmax, name='prob')
+        elif full_conv:
+            # Dense layer as 7x7 convolution, 4096 units
+            net, dilation = cls.conv_2d_layer(net, 'fc6', 4096, 7, dilation, pad=0)
+            # 50% dropout (only applied during training, turned off during prediction)
+            net = DropoutLayer(net, p=0.5, name='fc6_dropout')
+
+            # Dense layer, 4096 units
+            net, dilation = cls.nin_layer(net, 'fc7', 4096, dilation)
+            # 50% dropout (only applied during training, turned off during prediction)
+            net = DropoutLayer(net, p=0.5, name='fc7_dropout')
+
+            # Final dense layer, 1000 units: 1 for each class
+            net, dilation = cls.nin_layer(net, 'fc8', 1000, dilation, nonlinearity=None)
+            # Softmax non-linearity that will generate probabilities
+            net = NonlinearityLayer(net, functools.partial(util.flexible_softmax, axis=1), name='prob')
 
         return net
 

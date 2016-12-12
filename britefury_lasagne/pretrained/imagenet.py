@@ -32,7 +32,7 @@ class AbstractImageNetModel (object):
             network = self._final_layer_to_network_dict(final_layer)
 
         # Load in parameter values
-        self.set_param_values(final_layer, param_values)
+        self.set_param_values(final_layer, network, param_values)
 
         self.final_layer = final_layer
         self.network = network
@@ -55,7 +55,7 @@ class AbstractImageNetModel (object):
         raise NotImplementedError('Abstract for type {}'.format(cls))
 
     @classmethod
-    def set_param_values(cls, final_layer, param_values):
+    def set_param_values(cls, final_layer, network, param_values):
         n_params = len(lasagne.layers.get_all_params(final_layer))
         if n_params < len(param_values):
             param_values = param_values[:n_params]
