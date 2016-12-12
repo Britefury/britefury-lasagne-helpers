@@ -148,7 +148,7 @@ class VGG16Model (AbstractVGGModel):
         # 2x2 max-pooling; will reduce size from 14x14 to 7x7
         net, dilation = cls.pool_2d_layer(net, 'pool5', 2, dilation, pool_layers_to_expand)
 
-        if dilation is None:
+        if dilation == 1:
             # Dense layer, 4096 units
             net = DenseLayer(net, num_units=4096, name='fc6')
             # 50% dropout (only applied during training, turned off during prediction)
