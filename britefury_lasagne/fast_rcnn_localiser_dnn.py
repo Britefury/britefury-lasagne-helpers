@@ -9,7 +9,8 @@ class FastRCNNLocaliser (basic_dnn.BasicDNN):
     A fast RCNN localiser DNN for object detection.
     """
     def __init__(self, input_vars, num_anchor_boxes, objectness_var, obj_mask_var, relbox_var, box_mask_var,
-                 objectness_layer, relbox_layer, trainable_params=None, updates_fn=None, params_source=None):
+                 objectness_layer, relbox_layer, num_fg_classes=1, trainable_params=None, updates_fn=None,
+                 params_source=None):
         """
         Predicts for N anchor boxes
 
@@ -18,7 +19,7 @@ class FastRCNNLocaliser (basic_dnn.BasicDNN):
         an object of interest
         :param obj_mask_var: `None` or a `(sample,N,height,width)` binary as float32 variable indicating if the
         network should learn from the corresponding value in `objectness_var`
-        :param relbox_var: a `(sample,N*4,height,width)` float32 variable that gives the box position and size relative
+        :param relbox_var: a `(sample,4*N,height,width)` float32 variable that gives the box position and size relative
         to the corresponding anchor box
         :param box_mask_var: `None` or a a `(sample,N,height,width)` binary as float32 variable indicating if the
         network should learn from the corresponding values in `relbox_var`
@@ -26,6 +27,7 @@ class FastRCNNLocaliser (basic_dnn.BasicDNN):
         N*2 channels and identity non-linearity
         :param relbox_layer: a Lasagne layer that produces relative box position and size predictions; should have
         N*4 channels and identity non-linearity
+        :param num_fg_classes: the number of foreground classes
         :param trainable_params: [optional] parameters to train
         :param updates_fn: [optional] a function of the form `fn(cost, params)` that computes the update expressions
         required to update the state of the network
@@ -33,10 +35,11 @@ class FastRCNNLocaliser (basic_dnn.BasicDNN):
         provides the path of a NumPy file to load or a `BasicDNN` instance or a Lasagne layer or sequence of
         Lasagne layers.
         """
+        n_classes = num_fg_classes + 1
         # The `relbox_var` variable has 4 components, so expand the mask as appropriate
-        if objectness_layer.output_shape[1] != num_anchor_boxes*2:
-            raise ValueError('objectness_layer should output N*2 ({}) channels, not {}'.format(
-                num_anchor_boxes*2, objectness_layer.output_shape[1]
+        if objectness_layer.output_shape[1] != num_anchor_boxes*n_classes:
+            raise ValueError('objectness_layer should output N*{} ({}) channels, not {}'.format(
+                n_classes, num_anchor_boxes*n_classes, objectness_layer.output_shape[1]
             ))
         if relbox_layer.output_shape[1] != num_anchor_boxes*4:
             raise ValueError('relbox_layer should output N*4 ({}) channels, not {}'.format(
@@ -51,10 +54,10 @@ class FastRCNNLocaliser (basic_dnn.BasicDNN):
         self.num_anchor_boxes = num_anchor_boxes
         self.objectness_objectives = []
         for i in range(num_anchor_boxes):
-            obj_i_expr = objectness_var[:,i*2,:,:]
-            obj_i_mask = obj_mask_var[:,i*2,:,:] if obj_mask_var is not None else None
+            obj_i_expr = objectness_var[:,i*n_classes,:,:]
+            obj_i_mask = obj_mask_var[:,i*n_classes,:,:] if obj_mask_var is not None else None
 
-            obj_i_layer = lasagne.layers.SliceLayer(objectness_layer, indices=slice(i*2, i*2+2), axis=1)
+            obj_i_layer = lasagne.layers.SliceLayer(objectness_layer, indices=slice(i*n_classes, i*n_classes+n_classes), axis=1)
             obj_i_objective = dnn_objective.ClassifierObjective('objectness_{}'.format(i), obj_i_layer, obj_i_expr,
                                                                 mask_expr=obj_i_mask, n_target_spatial_dims=2,
                                                                 target_channel_index=None)
