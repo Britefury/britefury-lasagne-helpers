@@ -32,7 +32,8 @@ class AbstractImageNetModel (object):
             network = self._final_layer_to_network_dict(final_layer)
 
         # Load in parameter values
-        self.set_param_values(final_layer, network, param_values)
+        if param_values is not None:
+            self.set_param_values(final_layer, network, param_values)
 
         self.final_layer = final_layer
         self.network = network

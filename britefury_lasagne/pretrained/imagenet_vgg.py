@@ -54,8 +54,8 @@ class AbstractVGGModel (imagenet.AbstractImageNetModel):
         # Get the weight parameters of the dilated conv layers
         dilated_conv_Ws = {lyr.W for lyr in dilated_conv_layers}
         # Get the weight parameter of fc6
-        fc6 = network['fc6']
-        fc6_W = fc6.W
+        fc6 = network.get('fc6')
+        fc6_W = fc6.W if fc6 is not None else None
 
         # Transpose (flip) the first two dimensions of the parameter value weights of
         # dilated conv weights as dilated convolution weight tensors are of the shape
