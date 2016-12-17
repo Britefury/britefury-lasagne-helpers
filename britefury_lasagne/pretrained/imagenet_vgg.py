@@ -82,10 +82,10 @@ class AbstractVGGModel (imagenet.AbstractImageNetModel):
         else:
             if pad == 0:
                 pass
-            elif pad == 1:
-                cur_layer = PadLayer(cur_layer, width=dilation, name='{}_pad'.format(name))
+            elif pad >= 1:
+                cur_layer = PadLayer(cur_layer, width=pad * dilation, name='{}_pad'.format(name))
             else:
-                raise ValueError('Only padding of 0 or 1 supported, not {}'.format(pad))
+                raise ValueError('Only padding of 0 or >= 1 supported, not {}'.format(pad))
             cur_layer = DilatedConv2DLayer(cur_layer, num_filters=num_filters, filter_size=filter_size,
                                            flip_filters=False, dilation=dilation, name=name)
 
@@ -124,7 +124,7 @@ class AbstractVGGModel (imagenet.AbstractImageNetModel):
 class VGG16Model (AbstractVGGModel):
     @classmethod
     def build_network_final_layer(cls, input_shape=None, pool_layers_to_expand=None,
-                                  full_conv=False, **kwargs):
+                                  full_conv=False, pad_fc6=False, **kwargs):
         if pool_layers_to_expand is None:
             pool_layers_to_expand = set()
 
@@ -189,7 +189,8 @@ class VGG16Model (AbstractVGGModel):
             net = NonlinearityLayer(net, softmax, name='prob')
         elif full_conv:
             # Dense layer as 7x7 convolution, 4096 units
-            net, dilation = cls.conv_2d_layer(net, 'fc6', 4096, 7, dilation, pad=0)
+            fc6_padding = 3 if pad_fc6 else 0
+            net, dilation = cls.conv_2d_layer(net, 'fc6', 4096, 7, dilation, pad=fc6_padding)
             # 50% dropout (only applied during training, turned off during prediction)
             net = DropoutLayer(net, p=0.5, name='fc6_dropout')
 
