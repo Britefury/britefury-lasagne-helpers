@@ -1,4 +1,12 @@
+"""
+Utilities
+
+Bilinear upsampling code inspired by and based on:
+http://warmspringwinds.github.io/tensorflow/tf-slim/2016/12/18/image-segmentation-with-tensorflow-using-cnns-and-conditional-random-fields/
+"""
+import numpy as np
 import theano.tensor as T
+import lasagne
 
 
 def flatten_spatial(x, axis=1):
@@ -17,6 +25,40 @@ def flexible_softmax(x, axis=1):
     x_flat, x_preflatten_shape = flatten_spatial(x, axis=axis)
     x_flat = T.nnet.softmax(x_flat)
     return unflatten_spatial(x_flat, x_preflatten_shape, axis=axis)
+
+def linear_deconv_kernel(factor):
+    size = 2 * factor
+    if factor % 2 == 1:
+        centre = factor - 1.0
+        size -= 1
+    else:
+        centre = factor - 0.5
+    return 1.0 - (abs(np.arange(size) - centre) / float(factor))
+
+def bilinear_deconv_kernel(factor):
+    k1 = linear_deconv_kernel(factor)
+    return k1[:, None] * k1[None, :]
+
+def bilinear_deconv_weights(factor, channels):
+    kernel = bilinear_deconv_kernel(factor)
+
+    weights = np.zeros((channels, channels) + kernel.shape, dtype=np.float32)
+
+    for i in range(channels):
+        weights[i, i, :, :] = kernel
+
+    return weights
+
+def bilinear_deconv_layer(incoming, factor, channels=None, trainable=False):
+    if channels is None:
+        channels = incoming.output_shape[1]
+    weights = bilinear_deconv_weights(factor, channels)
+    kernel_shp = [int(x) for x in weights.shape[2:]]
+    if trainable:
+        return lasagne.layers.TransposedConv2DLayer(incoming, channels, kernel_shp, stride=(factor, factor), W=weights)
+    else:
+        return lasagne.layers.TransposedConv2DLayer(incoming, channels, kernel_shp, stride=(factor, factor),
+                                                    W=T.as_tensor_variable(weights), b=None)
 
 
 import unittest
@@ -133,3 +175,16 @@ class TestCase_flex_softmax(unittest.TestCase):
         b = f_flex_softmax_0(X)
         self.assertTrue(np.allclose(a, b))
 
+
+class TestCase_BilinearUpsampling (unittest.TestCase):
+    def test_linear_deconv_kernel(self):
+        from skimage.transform import rescale
+        X = np.array([[0.0, 1.0, 0.0]])
+        self.assertTrue(np.allclose(rescale(X, (1,2))[0,1:-1], linear_deconv_kernel(2)))
+
+    def test_bilinear_deconv_kernel(self):
+        from skimage.transform import rescale
+        X = np.array([[0.0, 0.0, 0.0],
+                      [0.0, 1.0, 0.0],
+                      [0.0, 0.0, 0.0]])
+        self.assertTrue(np.allclose(rescale(X, (2,2))[1:-1,1:-1], bilinear_deconv_kernel(2)))
