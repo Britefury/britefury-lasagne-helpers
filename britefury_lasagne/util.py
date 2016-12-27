@@ -26,6 +26,17 @@ def flexible_softmax(x, axis=1):
     x_flat = T.nnet.softmax(x_flat)
     return unflatten_spatial(x_flat, x_preflatten_shape, axis=axis)
 
+def spatial_crop_layer(incoming, crop):
+    if len(crop) == 2 and isinstance(crop[0], (tuple, list)):
+        y_crop, x_crop = crop
+    elif len(crop) == 1:
+        y_crop = x_crop = crop[0]
+    else:
+        raise ValueError('len(crop) should be 1 or 2, not {}'.format(len(crop)))
+    lyr = lasagne.layers.SliceLayer(incoming, indices=slice(y_crop[0], -y_crop[1]), axis=2)
+    lyr = lasagne.layers.SliceLayer(lyr, indices=slice(x_crop[0], -x_crop[1]), axis=3)
+    return lyr
+
 def linear_deconv_kernel(factor):
     size = 2 * factor
     if factor % 2 == 1:
@@ -49,16 +60,20 @@ def bilinear_deconv_weights(factor, channels):
 
     return weights
 
-def bilinear_deconv_layer(incoming, factor, channels=None, trainable=False):
+def bilinear_deconv_layer(incoming, factor, channels=None, trainable=False, crop=False):
     if channels is None:
         channels = incoming.output_shape[1]
     weights = bilinear_deconv_weights(factor, channels)
     kernel_shp = [int(x) for x in weights.shape[2:]]
     if trainable:
-        return lasagne.layers.TransposedConv2DLayer(incoming, channels, kernel_shp, stride=(factor, factor), W=weights)
+        lyr = lasagne.layers.TransposedConv2DLayer(incoming, channels, kernel_shp, stride=(factor, factor), W=weights)
     else:
-        return lasagne.layers.TransposedConv2DLayer(incoming, channels, kernel_shp, stride=(factor, factor),
-                                                    W=T.as_tensor_variable(weights), b=None)
+        lyr = lasagne.layers.TransposedConv2DLayer(incoming, channels, kernel_shp, stride=(factor, factor),
+                                                   W=T.as_tensor_variable(weights), b=None)
+    if crop:
+        c = factor // 2
+        lyr = spatial_crop_layer(lyr, ((c, c), (c, c)))
+    return lyr
 
 
 import unittest
@@ -188,3 +203,14 @@ class TestCase_BilinearUpsampling (unittest.TestCase):
                       [0.0, 1.0, 0.0],
                       [0.0, 0.0, 0.0]])
         self.assertTrue(np.allclose(rescale(X, (2,2))[1:-1,1:-1], bilinear_deconv_kernel(2)))
+
+    def test_bilinear_deconv_layer_shape(self):
+        lyr_in = lasagne.layers.InputLayer(shape=(2, 3, 6, 6))
+        lyr_x2_a = bilinear_deconv_layer(lyr_in, 2)
+        lyr_x4_a = bilinear_deconv_layer(lyr_in, 4)
+        lyr_x2_b = bilinear_deconv_layer(lyr_in, 2, crop=True)
+        lyr_x4_b = bilinear_deconv_layer(lyr_in, 4, crop=True)
+        self.assertEqual(lyr_x2_a.output_shape, (2, 3, 14, 14))
+        self.assertEqual(lyr_x4_a.output_shape, (2, 3, 28, 28))
+        self.assertEqual(lyr_x2_b.output_shape, (2, 3, 12, 12))
+        self.assertEqual(lyr_x4_b.output_shape, (2, 3, 24, 24))
