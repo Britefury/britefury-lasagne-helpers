@@ -66,10 +66,11 @@ def bilinear_deconv_layer(incoming, factor, channels=None, trainable=False, crop
     weights = bilinear_deconv_weights(factor, channels)
     kernel_shp = [int(x) for x in weights.shape[2:]]
     if trainable:
-        lyr = lasagne.layers.TransposedConv2DLayer(incoming, channels, kernel_shp, stride=(factor, factor), W=weights)
+        lyr = lasagne.layers.TransposedConv2DLayer(incoming, channels, kernel_shp, stride=(factor, factor),
+                                                   W=weights, nonlinearity=None)
     else:
         lyr = lasagne.layers.TransposedConv2DLayer(incoming, channels, kernel_shp, stride=(factor, factor),
-                                                   W=T.as_tensor_variable(weights), b=None)
+                                                   W=T.as_tensor_variable(weights), b=None, nonlinearity=None)
     if crop:
         c = factor // 2
         lyr = spatial_crop_layer(lyr, ((c, c), (c, c)))
