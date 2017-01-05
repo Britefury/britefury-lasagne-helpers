@@ -51,6 +51,8 @@ def convert_network_parameters(dst_network, src_network, src_param_values=None):
     for dst_p, src_p in zip(dst_params, src_params):
         dst_lyr = dst_param_to_layer[dst_p]
         src_lyr = src_param_to_layer[src_p]
+        # Default; copy value over
+        dst_param_table[dst_p] = src_p
         if isinstance(dst_lyr, lasagne.layers.DilatedConv2DLayer) and isinstance(src_lyr, _CONV2D_STD_LAYER_TYPES) or \
                         isinstance(dst_lyr, _CONV2D_STD_LAYER_TYPES) and isinstance(src_lyr,
                                                                                     lasagne.layers.DilatedConv2DLayer):
@@ -60,7 +62,7 @@ def convert_network_parameters(dst_network, src_network, src_param_values=None):
                 print('Info: {} -> {}: W {} -> W {}'.format(type(src_lyr).__name__, type(dst_lyr).__name__,
                                                             src_lyr.get_W_shape(), dst_lyr.get_W_shape()))
                 assert W in dst_params
-                src_p = src_param_values.get(src_p)
+                src_p = src_param_values.get(src_p, src_p)
                 # Dilated conv layers have their first two dimensions the other way round
                 src_p = src_p.transpose(1, 0, 2, 3)
                 # Handle different settings for flip filters
@@ -75,7 +77,7 @@ def convert_network_parameters(dst_network, src_network, src_param_values=None):
                 print('Info: {} -> {}: W {} -> W {}'.format(type(src_lyr).__name__, type(dst_lyr).__name__,
                                                             src_lyr.get_W_shape(), dst_lyr.get_W_shape()))
                 assert W in dst_params
-                src_p = src_param_values.get(src_p)
+                src_p = src_param_values.get(src_p, src_p)
                 # Handle different settings for flip filters
                 if dst_lyr.flip_filters != src_lyr.flip_filters:
                     dst_param_table[W] = src_p.transpose(0, 1, 3, 2)
@@ -85,7 +87,7 @@ def convert_network_parameters(dst_network, src_network, src_param_values=None):
             assert dst_p in dst_params
             W = getattr(dst_lyr, 'W_param', dst_lyr.W)
             if dst_p is W:
-                src_p = src_param_values.get(src_p)
+                src_p = src_param_values.get(src_p, src_p)
                 # Flip dense layer matrix from (num_inputs, num_units) -> (num_units, num_inputs)
                 src_p = src_p.transpose(1, 0)
                 # Reshape
@@ -103,7 +105,7 @@ def convert_network_parameters(dst_network, src_network, src_param_values=None):
             W = dst_lyr.W
             if dst_p is W:
                 assert W in dst_params
-                src_p = src_param_values.get(src_p)
+                src_p = src_param_values.get(src_p, src_p)
                 # If the convolutional layer is a DilatedConv2DLayer, swap the first two dimensions
                 if isinstance(dst_lyr, lasagne.layers.DilatedConv2DLayer):
                     src_p = src_p.transpose(1, 0, 2, 3)
@@ -118,10 +120,8 @@ def convert_network_parameters(dst_network, src_network, src_param_values=None):
         elif isinstance(dst_lyr, _DENSE_NIN_LAYER_TYPES) and isinstance(src_lyr, _DENSE_NIN_LAYER_TYPES):
             # Nothing to do; directly usable
             print('Info: {} -> {}'.format(type(src_lyr).__name__, type(dst_lyr).__name__))
-            pass
         elif type(dst_lyr) != type(src_lyr):
             print('WARNING: directly converting parameters from layer {} to {}'.format(
                 type(src_lyr), type(dst_lyr)
             ))
-
     return dst_param_table
