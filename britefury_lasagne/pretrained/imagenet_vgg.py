@@ -15,6 +15,7 @@
 
 import functools
 import numpy as np
+import six
 from lasagne.layers import InputLayer, DenseLayer, NonlinearityLayer, DropoutLayer,\
     Pool2DLayer, Conv2DLayer, DilatedConv2DLayer, PadLayer, NINLayer
 from lasagne.nonlinearities import softmax
@@ -98,24 +99,26 @@ class AbstractVGGModel (imagenet.AbstractImageNetModel):
         return cur_layer, dilation
 
     @classmethod
-    def pool_2d_layer(cls, cur_layer, name, pool_size, dilation, pool_layers_to_expand):
+    def pool_2d_layer(cls, cur_layer, name, pool_size, dilation, pool_layers_to_expand,
+                      pool_layers_to_remove):
         new_dilation = dilation
 
-        if name in pool_layers_to_expand:
+        if name in pool_layers_to_expand or name in pool_layers_to_remove:
             new_dilation *= pool_size
             stride = 1
         else:
             stride = pool_size
 
-        pool_size *= dilation
+        if name not in pool_layers_to_remove:
+            pool_size *= dilation
 
-        if stride < pool_size:
-            pad0 = (pool_size - stride) // 2
-            pad1 = (pool_size - stride) - pad0
-            cur_layer = PadLayer(cur_layer, width=[(pad0, pad1), (pad0, pad1)],
-                                 name='{}_pad'.format(name))
+            if stride < pool_size:
+                pad0 = (pool_size - stride) // 2
+                pad1 = (pool_size - stride) - pad0
+                cur_layer = PadLayer(cur_layer, width=[(pad0, pad1), (pad0, pad1)],
+                                     name='{}_pad'.format(name))
 
-        cur_layer = Pool2DLayer(cur_layer, pool_size=pool_size, stride=stride, name=name)
+            cur_layer = Pool2DLayer(cur_layer, pool_size=pool_size, stride=stride, name=name)
 
         return cur_layer, new_dilation
 
@@ -124,9 +127,27 @@ class AbstractVGGModel (imagenet.AbstractImageNetModel):
 class VGG16Model (AbstractVGGModel):
     @classmethod
     def build_network_final_layer(cls, input_shape=None, pool_layers_to_expand=None,
+                                  pool_layers_to_remove=None,
                                   full_conv=False, pad_fc6=False, **kwargs):
         if pool_layers_to_expand is None:
             pool_layers_to_expand = set()
+        elif isinstance(pool_layers_to_expand, six.string_types):
+            pool_layers_to_expand = {pool_layers_to_expand}
+        elif isinstance(pool_layers_to_expand, set):
+            pass
+        else:
+            raise ValueError('pool_layers_to_expand should be None, a string or a set, not a {}'.format(
+                type(pool_layers_to_expand)))
+
+        if pool_layers_to_remove is None:
+            pool_layers_to_remove = set()
+        elif isinstance(pool_layers_to_remove, six.string_types):
+            pool_layers_to_remove = {pool_layers_to_remove}
+        elif isinstance(pool_layers_to_remove, set):
+            pass
+        else:
+            raise ValueError('pool_layers_to_remove should be None, a string or a set, not a {}'.format(
+                type(pool_layers_to_remove)))
 
         if input_shape is None:
             # Default input shape: 3 channel images of size 224 x 224.
@@ -143,34 +164,39 @@ class VGG16Model (AbstractVGGModel):
         net, dilation = cls.conv_2d_layer(net, 'conv1_1', 64, 3, dilation)
         net, dilation = cls.conv_2d_layer(net, 'conv1_2', 64, 3, dilation)
         # 2x2 max-pooling; will reduce size from 224x224 to 112x112
-        net, dilation = cls.pool_2d_layer(net, 'pool1', 2, dilation, pool_layers_to_expand)
+        net, dilation = cls.pool_2d_layer(net, 'pool1', 2, dilation, pool_layers_to_expand,
+                                          pool_layers_to_remove)
 
         # Two convolutional layers, 128 filters
         net, dilation = cls.conv_2d_layer(net, 'conv2_1', 128, 3, dilation)
         net, dilation = cls.conv_2d_layer(net, 'conv2_2', 128, 3, dilation)
         # 2x2 max-pooling; will reduce size from 112x112 to 56x56
-        net, dilation = cls.pool_2d_layer(net, 'pool2', 2, dilation, pool_layers_to_expand)
+        net, dilation = cls.pool_2d_layer(net, 'pool2', 2, dilation, pool_layers_to_expand,
+                                          pool_layers_to_remove)
 
         # Three convolutional layers, 256 filters
         net, dilation = cls.conv_2d_layer(net, 'conv3_1', 256, 3, dilation)
         net, dilation = cls.conv_2d_layer(net, 'conv3_2', 256, 3, dilation)
         net, dilation = cls.conv_2d_layer(net, 'conv3_3', 256, 3, dilation)
         # 2x2 max-pooling; will reduce size from 56x56 to 28x28
-        net, dilation = cls.pool_2d_layer(net, 'pool3', 2, dilation, pool_layers_to_expand)
+        net, dilation = cls.pool_2d_layer(net, 'pool3', 2, dilation, pool_layers_to_expand,
+                                          pool_layers_to_remove)
 
         # Three convolutional layers, 512 filters
         net, dilation = cls.conv_2d_layer(net, 'conv4_1', 512, 3, dilation)
         net, dilation = cls.conv_2d_layer(net, 'conv4_2', 512, 3, dilation)
         net, dilation = cls.conv_2d_layer(net, 'conv4_3', 512, 3, dilation)
         # 2x2 max-pooling; will reduce size from 28x28 to 14x14
-        net, dilation = cls.pool_2d_layer(net, 'pool4', 2, dilation, pool_layers_to_expand)
+        net, dilation = cls.pool_2d_layer(net, 'pool4', 2, dilation, pool_layers_to_expand,
+                                          pool_layers_to_remove)
 
         # Three convolutional layers, 512 filters
         net, dilation = cls.conv_2d_layer(net, 'conv5_1', 512, 3, dilation)
         net, dilation = cls.conv_2d_layer(net, 'conv5_2', 512, 3, dilation)
         net, dilation = cls.conv_2d_layer(net, 'conv5_3', 512, 3, dilation)
         # 2x2 max-pooling; will reduce size from 14x14 to 7x7
-        net, dilation = cls.pool_2d_layer(net, 'pool5', 2, dilation, pool_layers_to_expand)
+        net, dilation = cls.pool_2d_layer(net, 'pool5', 2, dilation, pool_layers_to_expand,
+                                          pool_layers_to_remove)
 
         if dilation == 1 and not full_conv:
             # Dense layer, 4096 units
