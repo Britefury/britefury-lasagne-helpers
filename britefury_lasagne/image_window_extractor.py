@@ -112,8 +112,6 @@ class ImageWindowExtractor (object):
             raise TypeError('indices must be a NumPy integer array, not a {}'.format(type(indices)))
         img_i, window_y, window_x = self.window_indices_to_coords(indices)
         windows = self.get_windows_by_separate_coords(img_i, window_y, window_x)
-        if self.postprocess_fn is not None:
-            windows = self.postprocess_fn(windows)
         return windows
 
     def get_windows_by_separate_coords(self, img_i, window_y, window_x):

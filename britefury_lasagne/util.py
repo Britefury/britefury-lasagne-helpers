@@ -21,10 +21,19 @@ def unflatten_spatial(x_flat, x_preflatten_shape, axis=1):
     x = x_reordered.transpose(*axis_return)
     return x
 
-def flexible_softmax(x, axis=1):
-    x_flat, x_preflatten_shape = flatten_spatial(x, axis=axis)
-    x_flat = T.nnet.softmax(x_flat)
-    return unflatten_spatial(x_flat, x_preflatten_shape, axis=axis)
+def spatial(f):
+    def spatial_f(x, axis=1):
+        x_flat, x_preflatten_shape = flatten_spatial(x, axis=axis)
+        x_flat = f(x_flat)
+        return unflatten_spatial(x_flat, x_preflatten_shape, axis=axis)
+
+    if hasattr(f, '__name__'):
+        spatial_f.__name__ = 'spatial_' + f.__name__
+
+    return spatial_f
+
+flexible_softmax = spatial(T.nnet.softmax)
+
 
 def spatial_crop_layer(incoming, crop):
     if len(crop) == 2 and isinstance(crop[0], (tuple, list)):
