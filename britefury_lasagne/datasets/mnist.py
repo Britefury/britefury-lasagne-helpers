@@ -5,7 +5,7 @@ __author__ = 'Britefury'
 import numpy as np
 import gzip
 
-from . import dataset
+from britefury_lasagne import dataset
 
 
 def _download_mnist(filename, source='http://yann.lecun.com/exdb/mnist/'):
@@ -37,13 +37,19 @@ def _load_mnist_labels(filename):
 
 
 class MNIST (object):
-    def __init__(self):
+    def __init__(self, n_val=10000):
         # We can now download and read the training and test set images and labels.
         train_X = _load_mnist_images('train-images-idx3-ubyte.gz')
         train_y = _load_mnist_labels('train-labels-idx1-ubyte.gz')
         self.test_X = _load_mnist_images('t10k-images-idx3-ubyte.gz')
         self.test_y = _load_mnist_labels('t10k-labels-idx1-ubyte.gz')
 
-        # We reserve the last 10000 training examples for validation.
-        self.train_X, self.val_X = train_X[:-10000], train_X[-10000:]
-        self.train_y, self.val_y = train_y[:-10000], train_y[-10000:]
+        if n_val is None or n_val == 0:
+            # We reserve the last 10000 training examples for validation.
+            self.train_X = train_X
+            self.train_y = train_y
+            self.val_X = np.zeros((0, 1, 28, 28), dtype=np.float32)
+            self.val_y = np.zeros((0,), dtype=np.int32)
+        else:
+            self.train_X, self.val_X = train_X[:-n_val], train_X[-n_val:]
+            self.train_y, self.val_y = train_y[:-n_val], train_y[-n_val:]

@@ -130,6 +130,75 @@ def arraylikes_batch_iterator(dataset, batchsize,
             yield [d[start_idx:start_idx+batchsize] for d in dataset]
 
 
+def circular_arraylikes_batch_iterator(dataset, batchsize,
+                                       shuffle_rng=None):
+    """
+    Create an iterator that generates an infinite sequence of mini-batches
+    extracted from the sequence of array-likes `dataset`. The batches will
+    have `batchsize` elements. If `shuffle_rng` is `None`, elements will
+    be extracted in order. If it is not `None`, it will be used to
+    randomise the order in which elements are extracted from `dataset`.
+    Once the supply of elements from `dataset` are exhausted, it will start
+    from the beginning (or a random point if shuffling is used).
+
+    The generated mini-batches take the form `[batch_x, batch_y, ...]`
+    where `batch_x`, `batch_y`, etc. are extracted from each array-like in
+    `dataset`.
+
+    Parameters
+    ----------
+    dataset: tuple or list
+        Sequence of array-like elements.
+    batchsize: int
+        Mini-batch size
+    shuffle_rng: `np.random.RandomState` or `None`
+        Used to randomise element order. If `None`, elements will be extracted
+        in order.
+
+    Returns
+    -------
+    iterator
+        An iterator that generates items of type `[batch_x, batch_y, ...]`
+        where `batch_x`, `batch_y`, etc are themselves arrays.
+    """
+    N = length_of_arraylikes_in_sequence(dataset)
+    if shuffle_rng is not None:
+        indices = shuffle_rng.permutation(N)
+        i = 0
+        while True:
+            j = i + batchsize
+            if j <= N:
+                # Within size of dataset
+                batch_ndx = indices[i:j]
+                i = j
+            else:
+                # Wrap over
+                # Compute number of elements required to make up the batch
+                k = batchsize - (N - i)
+                # Get available indices
+                batch_ndx = indices[i:N]
+                # Re-populate indices
+                indices = shuffle_rng.permutation(N)
+                # Get remaining indices and append
+                batch_ndx = np.append(batch_ndx, indices[:k], axis=0)
+                i = k
+            yield [d[batch_ndx] for d in dataset]
+    else:
+        i = 0
+        while True:
+            j = i + batchsize
+            if j <= N:
+                # Within size of dataset
+                yield [d[i:j] for d in dataset]
+                i = j
+            else:
+                # Wrap over
+                # Compute number of elements required to make up the batch
+                k = batchsize - (N - i)
+                yield [np.append(d[i:N], d[:k], axis=0) for d in dataset]
+                i = k
+
+
 def batch_iterator(dataset, batchsize, shuffle_rng=None):
     """
     Create an iterator that will iterate over the data in `dataset` in

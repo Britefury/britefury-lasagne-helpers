@@ -16,10 +16,10 @@ class AbstractImageNetModel (object):
     """
 
     def __init__(self, class_names, model_name, param_values,
-                 model_default_image_size, input_shape=None, last_layer_name=None):
-
+                 model_default_image_size, input_shape=None, last_layer_name=None,
+                 **kwargs):
         # Build the network
-        final_layer = self.build_network(input_shape=input_shape)
+        final_layer = self.build_network_final_layer(input_shape=input_shape, **kwargs)
         # Generate dictionary mapping layer name to layer
         network = self._final_layer_to_network_dict(final_layer)
 
@@ -32,11 +32,8 @@ class AbstractImageNetModel (object):
             network = self._final_layer_to_network_dict(final_layer)
 
         # Load in parameter values
-        if last_layer_name is None:
-            lasagne.layers.set_all_param_values(final_layer, param_values)
-        else:
-            n_params = len(lasagne.layers.get_all_params(final_layer))
-            lasagne.layers.set_all_param_values(final_layer, param_values[:n_params])
+        if param_values is not None:
+            self.set_param_values(final_layer, network, param_values)
 
         self.final_layer = final_layer
         self.network = network
@@ -55,8 +52,15 @@ class AbstractImageNetModel (object):
         return net_dict
 
     @classmethod
-    def build_network(cls, input_shape=None):
+    def build_network_final_layer(cls, input_shape=None, **kwargs):
         raise NotImplementedError('Abstract for type {}'.format(cls))
+
+    @classmethod
+    def set_param_values(cls, final_layer, network, param_values):
+        n_params = len(lasagne.layers.get_all_params(final_layer))
+        if n_params < len(param_values):
+            param_values = param_values[:n_params]
+        lasagne.layers.set_all_param_values(final_layer, param_values)
 
     def standardise(self, image_tensor):
         raise NotImplementedError('Abstract for type {}'.format(type(self)))
