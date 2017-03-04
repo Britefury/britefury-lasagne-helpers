@@ -48,6 +48,8 @@ class MNIST (object):
             # We reserve the last 10000 training examples for validation.
             self.train_X = train_X
             self.train_y = train_y
+            self.val_X = np.zeros((0, 1, 28, 28), dtype=np.float32)
+            self.val_y = np.zeros((0,), dtype=np.int32)
         else:
             self.train_X, self.val_X = train_X[:-n_val], train_X[-n_val:]
             self.train_y, self.val_y = train_y[:-n_val], train_y[-n_val:]

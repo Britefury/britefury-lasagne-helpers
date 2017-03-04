@@ -55,6 +55,8 @@ class CIFAR10 (object):
         train_X, train_y, test_X, test_y = _load_cifar10()
         if n_val == 0 or n_val is None:
             self.train_X, self.train_y = train_X, train_y
+            self.val_X = np.zeros((0, 3, 32, 32), dtype=np.float32)
+            self.val_y = np.zeros((0,), dtype=np.int32)
         else:
             self.train_X, self.val_X = train_X[:-n_val], train_X[-n_val:]
             self.train_y, self.val_y = train_y[:-n_val], train_y[-n_val:]
