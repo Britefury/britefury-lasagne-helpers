@@ -37,13 +37,17 @@ def _load_mnist_labels(filename):
 
 
 class MNIST (object):
-    def __init__(self):
+    def __init__(self, n_val=10000):
         # We can now download and read the training and test set images and labels.
         train_X = _load_mnist_images('train-images-idx3-ubyte.gz')
         train_y = _load_mnist_labels('train-labels-idx1-ubyte.gz')
         self.test_X = _load_mnist_images('t10k-images-idx3-ubyte.gz')
         self.test_y = _load_mnist_labels('t10k-labels-idx1-ubyte.gz')
 
-        # We reserve the last 10000 training examples for validation.
-        self.train_X, self.val_X = train_X[:-10000], train_X[-10000:]
-        self.train_y, self.val_y = train_y[:-10000], train_y[-10000:]
+        if n_val is None or n_val == 0:
+            # We reserve the last 10000 training examples for validation.
+            self.train_X = train_X
+            self.train_y = train_y
+        else:
+            self.train_X, self.val_X = train_X[:-n_val], train_X[-n_val:]
+            self.train_y, self.val_y = train_y[:-n_val], train_y[-n_val:]

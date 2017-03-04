@@ -26,8 +26,13 @@ def _load_svhn(filename):
 
 
 class SVHN (object):
-    def __init__(self):
-        self.train_X, self.train_y = _load_svhn('train_32x32.mat')
+    def __init__(self, n_val=10000):
+        train_X, train_y = _load_svhn('train_32x32.mat')
+        if n_val == 0 or n_val is None:
+            self.train_X, self.train_y = train_X, train_y
+        else:
+            self.train_X, self.val_X = train_X[:-n_val], train_X[-n_val:]
+            self.train_y, self.val_y = train_y[:-n_val], train_y[-n_val:]
         self.test_X, self.test_y = _load_svhn('test_32x32.mat')
 
 
