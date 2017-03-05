@@ -242,6 +242,8 @@ def ground_truth_boxes_to_y(anchor_grid_origin, anchor_grid_cell_size, anchor_gr
                                                      anchor_grid_shape, anchor_box_sizes, gt_box)
         anchor_ranges[:,:,0] = np.maximum(anchor_ranges[:,:,0], valid_ranges[:,:,0])
         anchor_ranges[:,:,1] = np.minimum(anchor_ranges[:,:,1], valid_ranges[:,:,1])
+        anchor_ranges[:,0,1] = np.minimum(anchor_ranges[:,0,1], anchor_grid_shape[0] - 1)
+        anchor_ranges[:,1,1] = np.minimum(anchor_ranges[:,1,1], anchor_grid_shape[1] - 1)
 
         gt_lower = gt_box[:2] - gt_box[2:] * 0.5
         gt_upper = gt_box[:2] + gt_box[2:] * 0.5
@@ -255,6 +257,11 @@ def ground_truth_boxes_to_y(anchor_grid_origin, anchor_grid_cell_size, anchor_gr
             yend = anchor_range[0,1]
             xstart = anchor_range[1,0]
             xend = anchor_range[1,1]
+
+            assert ystart >= 0
+            assert yend < anchor_grid_shape[0]
+            assert xstart >= 0
+            assert xend < anchor_grid_shape[1]
 
             if yend >= ystart and xend >= xstart:
                 # Compute the y and x coords of the centres of the anchor boxes
