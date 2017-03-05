@@ -1,8 +1,9 @@
 import sys
+import six
 import time
-import numpy as np
+import functools
 import lasagne
-from .batch import batch_iterator, dataset_length
+from . import data_source
 
 
 VERBOSITY_NONE = None
@@ -31,101 +32,6 @@ def _default_val_improved_func(new_val_results, best_val_results):
     # Default validation improvement detetion function
     # Defined here so that pickle can find it if necessary
     return new_val_results[0] < best_val_results[0]
-
-
-def _batch_loop(fn, data, batchsize, progress_iter_func=None, desc='',
-                shuffle_rng=None, prepend_args=None):
-    """
-    Batch loop helper function.
-    Split data into mini-batches and apply a function to each mini-batch.
-    The function is usually a training or evaluation function.
-
-    `data` must be a sequence of array-likes, an object with a
-    `batch_iterator` method or a callable; see :func:`batch.batch_iterator`.
-
-    Parameters
-    ----------
-    fn: callable `fn(*batch)`
-        The function to call on each mini-batch of the form
-    data: dataset
-        The data to draw mini-batches from
-    batchsize: int
-        The number of samples per mini-batch
-    progress_iter_func: callable
-        A tqdm style progress-reporting iterator wrapper
-    desc: string
-        A description to pass as the `desc` keyword argument to
-        `progress_iter_func`
-    shuffle_rng: `None` or a `np.random.RandomState`
-        A random number generator used to shuffle the order of samples. If one
-        is not provided samples will be processed in-order (e.g.
-        during validation and test).
-    prepend_args: [optional] tuple
-        Arguments to prepend to the arguments passed to `fn`
-
-    Returns
-    -------
-    list
-        The sum of the results of the function `fn` divided by the number of
-        samples processed, e.g.
-        `[sum(outA_per_batch) / n_samples,
-          sum(outB_per_batch) / n_samples,
-          ...]`
-    """
-    # Accumulator for results and number of samples
-    results_accum = None
-    n_samples_accum = 0
-
-    # Create the iterator that will generate mini-batches
-    batch_iter = batch_iterator(data, batchsize, shuffle_rng=shuffle_rng)
-
-    # If `progress_iter_func` is not `None`, apply it
-    if progress_iter_func is not None:
-        n_samples = dataset_length(data)
-        if n_samples is not None:
-            n_batches = n_samples // batchsize
-            if (n_samples % batchsize) > 0:
-                n_batches += 1
-        else:
-            n_batches = None
-        batch_iter = progress_iter_func(batch_iter, total=n_batches, desc=desc,
-                                        leave=False)
-
-    # Train on each batch
-    for batch_i, batch in enumerate(batch_iter):
-        # Get number of samples in batch; can vary
-        batch_n = batch[0].shape[0]
-
-        # Apply on batch and check the type of the results
-        if prepend_args is not None:
-            batch_results = fn(*(prepend_args + tuple(batch)))
-        else:
-            batch_results = fn(*batch)
-        if batch_results is None:
-            pass
-        elif isinstance(batch_results, np.ndarray):
-            batch_results = [batch_results]
-        elif isinstance(batch_results, list):
-            pass
-        else:
-            raise TypeError(
-                    'Batch function should return a list of results for the '
-                    'batch or None, not {}'.format(type(batch_results)))
-
-        # Accumulate training results and number of examples
-        if results_accum is None:
-            results_accum = batch_results
-        else:
-            if batch_results is not None:
-                for i in range(len(results_accum)):
-                    results_accum[i] += batch_results[i]
-        n_samples_accum += batch_n
-
-    # Divide by the number of training examples used to compute mean
-    if results_accum is not None:
-        results_accum = [r / n_samples_accum for r in results_accum]
-
-    return results_accum
 
 
 class TrainingFailedException (Exception):
@@ -194,16 +100,18 @@ class TrainingResults (object):
 
 
 def train(train_set, val_set=None, test_set=None, train_batch_func=None,
-          train_log_func=None, train_epoch_results_check_func=None,
+          train_log_msg=None, train_epoch_results_check_func=None,
           train_pass_epoch_number=False, eval_batch_func=None,
-          eval_log_func=None, val_improved_func=None, val_interval=None,
+          eval_log_msg=None, val_improved_func=None, val_interval=None,
           batchsize=128, num_epochs=100, min_epochs=None,
           val_improve_patience=1, val_improve_patience_factor=0.0,
-          epoch_log_func=None, pre_epoch_callback=None,
+          epoch_log_msg=None, pre_epoch_callback=None,
           post_epoch_callback=None, progress_iter_func=None,
           verbosity=VERBOSITY_EPOCH, log_stream=sys.stdout,
           log_final_result=True, get_state_func=None, set_state_func=None,
-          layer_to_restore=None, updates_to_restore=None, shuffle_rng=None):
+          layer_to_restore=None, updates_to_restore=None,
+          store_state_after_epoch=None,
+          shuffle_rng=None):
     """
     Neural network training loop, designed to be as generic as possible
     in order to simplify implementing a Theano/Lasagne training loop.
@@ -237,11 +145,15 @@ def train(train_set, val_set=None, test_set=None, train_batch_func=None,
         loss/errors for the samples in the batch batch as the values will be
         accumulated and divided by the total number of training samples
         after all mini-batches has been processed.
-    train_log_func: [optional] callable
-        `train_log_func(train_results) -> str`
-        Function that generates log output for the training results accumulated
-        over an epoch. The default behaviour is to convert the train results
-        to a string using `str(train_results)`.
+    train_log_msg: [optional] str or callable
+        If a string is provided the training log message is generated using
+        the format method: `train_log_msg.format(*train_results)`, e.g.
+        passing the string 'loss {0} err {1}' would be suitable to log loss
+        and error values from the training results. If a callable is provided
+        the training log message is generated using
+        `train_log_msg(train_results)`. If a training log message is not
+        provided, the default behaviour is to convert the train results to a
+        string using `str(train_results)`.
     train_epoch_results_check_func: [optional] callable
         `train_epoch_results_check_func(epoch, train_epoch_results) -> str`
         Function that is invoked to check the results returned by
@@ -270,11 +182,15 @@ def train(train_set, val_set=None, test_set=None, train_batch_func=None,
         and that a *lower* value indicates a *better* result. This can be
         overridden by providing a callable for `val_improved_func`
         that can use a custom improvement detection strategy
-    eval_log_func: [optional] callable
-        `eval_log_func(eval_results) -> str`
-        Function that generates log output for the evaluation results
-        accumulated over an epoch. The default behaviour is to convert the
-        evaluation results to a string using `str(eval_results)`.
+    eval_log_msg: [optional] str or callable
+        If a string is provided the evaluation log message is generated using
+        the format method: `eval_log_msg.format(*eval_results)`, e.g.
+        passing the string 'loss {0} err {1}' would be suitable to log loss
+        and error values from the evaluation results. If a callable is provided
+        the evaluation log message is generated using
+        `eval_log_msg(eval_results)`. If a evaluation log message is not
+        provided, the default behaviour is to convert the train results to a
+        string using `str(eval_results)`.
     val_improved_func: [optional] callable
         `validation_improved_func(new_val_results, best_val_results) -> bool`
         Validation improvement detection function that determines if the
@@ -300,17 +216,20 @@ def train(train_set, val_set=None, test_set=None, train_batch_func=None,
         If not `None`, training will terminate early if a run of
         `(current_epoch + 1) * val_improve_patience_factor` epochs executes
         with no improvement in validation score.
-    epoch_log_func: [optional] callable
-        `epoch_log_func(epoch, d_time, train_str, val_str, test_str) -> str`
-        Customise the log string generated after each epoch; a function that
-        generates a string describing the epoch training results. `epoch` is
-        the epoch index, `d_time` is the time elapsed in seconds.
-        `train_str`, `val_str` and `test_str` are strings or `None`,
-        that represent that training, validation and test results if
-        available. They come from invoking `train_log_func` to get the
-        training results and `eval_log_func` to get the validation and test
-        results. The default behaviour produces a line reporting the epoch
-        index, time elapsed, train, validation and test results.
+    epoch_log_msg: [optional] str or callable
+        If a string is provided the epoch log message is generated using
+        the format method:
+        `epoch_log_msg.format(epoch, d_time, train_str, val_str, test_str)`.
+        If a callable is provided the epoch log message is generated using
+        `epoch_log_msg(epoch, d_time, train_str, val_str, test_str)`.
+        The arguments are as follows: `epoch` is the epoch index, `d_time` is
+        the time elapsed in seconds. `train_str`, `val_str` and `test_str`
+        are strings or `None`, that represent that training, validation and
+        test results if available. They can be customised by providing values
+        for `train_log_msg` for training results and `eval_log_msg` for
+        validation and test results. The default behaviour produces a line
+        reporting the epoch index, time elapsed, train, validation and test
+        results, and should be suitable for most purposes.
     pre_epoch_callback: [optional] callable `pre_epoch_callback(epoch)`
         If provided this function will be invoked before the start of
         each epoch, with the epoch index provided as the (first)
@@ -323,12 +242,13 @@ def train(train_set, val_set=None, test_set=None, train_batch_func=None,
         validation results as the third if validation was performed this
         epoch, `None` otherwise.
     progress_iter_func: [optional] callable
-        `progress_iter_func(iterator, total=total, desc=desc)`
+        `progress_iter_func(iterator, total=total, desc=desc, leave=leave)`
         A `tqdm` style function that will be passed the iterator that
-        generates training batches along with the total number of batches and
-        the description that will be `'Train'`. By passing either
-        `tqdm.tqdm` or `tqdm.tqdm_notebook` as this argument you can have the
-        training loop display a progress bar.
+        generates training batches along with the total number of batches,
+        the current task description as a string and `False` for the
+        `leave parameter. By passing either `tqdm.tqdm` or
+        `tqdm.tqdm_notebook` as this argument you can have the training loop
+        display a progress bar.
     verbosity: one of `VERBOSITY_NONE` (`None`), `VERBOSITY_MINIMAL`
         (`'minimal'`) or `VERBOSITY_EPOCH` (`'epoch'`)
         How much information is written to the log stream describing progress.
@@ -368,6 +288,10 @@ def train(train_set, val_set=None, test_set=None, train_batch_func=None,
         a value for :param:`update_to_restore` without a value for
         :param:`layer_to_restore` will result in the :method:`train`
         method raising `ValueError`.
+    store_state_after_epoch: [optional] None or an integer that specifies
+        an epoch index. If provided, state will not be stored and
+        improvements in validation score will not be detected until the
+        specified epoch has passed
     shuffle_rng: `None` or a `np.random.RandomState`
         A random number generator used to shuffle the order of samples
         during training. If one is not provided, `lasagne.rng.get_rng()`
@@ -404,19 +328,42 @@ def train(train_set, val_set=None, test_set=None, train_batch_func=None,
     # Provide defaults
     if val_improved_func is None:
         val_improved_func = _default_val_improved_func
-    if epoch_log_func is None:
-        epoch_log_func = _default_epoch_log_func
     if shuffle_rng is None:
         shuffle_rng = lasagne.random.get_rng()
+
+    if store_state_after_epoch is not None:
+        # Ensure that store_state_after_epoch <= num_epochs - 1
+        store_state_after_epoch = min(store_state_after_epoch,
+                                      num_epochs - 1)
 
     if min_epochs is None:
         # min_epochs not provided; default to num_epochs
         min_epochs = num_epochs
     else:
+        if store_state_after_epoch is not None:
+            # Ensure that min_epochs >= store_state_after_epoch + 1
+            min_epochs = max(min_epochs, store_state_after_epoch + 1)
+
         # Ensure that min_epochs <= num_epochs
         min_epochs = min(min_epochs, num_epochs)
 
+
     # Check parameter sanity
+    # Coerce data sets to data source types
+    train_set = data_source.coerce_data_source(train_set)
+
+    if val_set is not None:
+        val_set = data_source.coerce_data_source(val_set)
+
+    if test_set is not None:
+        test_set = data_source.coerce_data_source(test_set)
+
+    if test_set is not None and \
+            not isinstance(test_set, data_source.AbstractDataSource):
+        raise TypeError(
+            'val_set is not None or a data source, it is a {}'.format(
+                type(val_set)))
+
     if train_batch_func is None:
         raise ValueError('no batch training function provided to '
                          'either the constructor or the `train` method')
@@ -431,6 +378,43 @@ def train(train_set, val_set=None, test_set=None, train_batch_func=None,
     if updates_to_restore is not None and layer_to_restore is None:
         raise ValueError('`updates_to_restore` provided without '
                          '`layer_to_restore`')
+    # Handle log messages
+    if train_log_msg is None:
+        def train_log_func(train_res):
+            return '{}'.format(train_res)
+    elif isinstance(train_log_msg, six.string_types):
+        def train_log_func(train_res):
+            return train_log_msg.format(*train_res)
+    elif callable(train_log_msg):
+        train_log_func = train_log_msg
+    else:
+        raise TypeError('train_log_msg should be None, a string or a '
+                        'callable, not a {}'.format(type(train_log_msg)))
+
+    if eval_log_msg is None:
+        def eval_log_func(eval_res):
+            return '{}'.format(eval_res)
+    elif isinstance(eval_log_msg, six.string_types):
+        def eval_log_func(eval_res):
+            return eval_log_msg.format(*eval_res)
+    elif callable(eval_log_msg):
+        eval_log_func = eval_log_msg
+    else:
+        raise TypeError('eval_log_msg should be None, a string or a '
+                        'callable, not a {}'.format(type(eval_log_msg)))
+
+    if epoch_log_msg is None:
+        epoch_log_func = _default_epoch_log_func
+    elif isinstance(epoch_log_msg, six.string_types):
+        def epoch_log_func(epoch, d_time, train_str, val_str, test_str):
+            return epoch_log_msg.format(epoch, d_time, train_str, val_str,
+                                        test_str)
+    elif callable(epoch_log_msg):
+        epoch_log_func = epoch_log_msg
+    else:
+        raise TypeError('epoch_log_msg should be None, a string or a '
+                        'callable, not a {}'.format(type(epoch_log_msg)))
+
     if get_state_func is not None and set_state_func is None:
         if layer_to_restore is not None:
             print('WARNING: `Trainer.train()`: `get_state_func` '
@@ -484,20 +468,11 @@ def train(train_set, val_set=None, test_set=None, train_batch_func=None,
                            val_res, test_res):
         train_str = val_str = test_str = None
         if train_res is not None:
-            if train_log_func is not None:
-                train_str = train_log_func(train_res)
-            else:
-                train_str = '{}'.format(train_res)
+            train_str = train_log_func(train_res)
         if val_res is not None:
-            if eval_log_func is not None:
-                val_str = eval_log_func(val_res)
-            else:
-                val_str = '{}'.format(val_res)
+            val_str = eval_log_func(val_res)
         if test_res is not None:
-            if eval_log_func is not None:
-                test_str = eval_log_func(test_res)
-            else:
-                test_str = '{}'.format(test_res)
+            test_str = eval_log_func(test_res)
         _log(epoch_log_func(epoch_index, delta_time, train_str, val_str,
                             test_str) + '\n')
 
@@ -553,11 +528,15 @@ def train(train_set, val_set=None, test_set=None, train_batch_func=None,
         # Log start of training
         # Train
         train_epoch_args = (epoch,) if train_pass_epoch_number else None
-        train_results = _batch_loop(train_batch_func, train_set,
-                                    batchsize, progress_iter_func,
-                                    'Epoch {} train'.format(epoch + 1),
-                                    shuffle_rng=shuffle_rng,
-                                    prepend_args=train_epoch_args)
+        if progress_iter_func is not None:
+            train_prog_iter = functools.partial(
+                progress_iter_func, desc='Epoch {} train'.format(epoch + 1))
+        else:
+            train_prog_iter = None
+        train_results = train_set.mean_batch_map(
+            train_batch_func, batchsize, shuffle=shuffle_rng,
+            progress_iter_func=train_prog_iter, sum_axis=None,
+            prepend_args=train_epoch_args)
 
         if train_epoch_results_check_func is not None:
             reason = train_epoch_results_check_func(epoch, train_results)
@@ -583,39 +562,58 @@ def train(train_set, val_set=None, test_set=None, train_batch_func=None,
         if val_set is not None and _should_validate(epoch):
             validated = True
 
-            validation_results = _batch_loop(eval_batch_func, val_set,
-                    batchsize, progress_iter_func,
-                    'Epoch {} val'.format(epoch + 1))
-            if best_validation_results is None or \
-                    val_improved_func(validation_results,
-                                      best_validation_results):
-                validation_improved = True
+            if progress_iter_func is not None:
+                val_prog_iter = functools.partial(
+                    progress_iter_func, desc='Epoch {} val'.format(epoch + 1))
+            else:
+                val_prog_iter = None
+            validation_results = val_set.mean_batch_map(
+                eval_batch_func, batchsize, progress_iter_func=val_prog_iter,
+                sum_axis=None)
+            if store_state_after_epoch is None or \
+                    epoch >= store_state_after_epoch:
+                if best_validation_results is None or \
+                        val_improved_func(validation_results,
+                                          best_validation_results):
+                    validation_improved = True
 
-                # Validation score improved
-                best_train_results = train_results
-                best_validation_results = validation_results
-                best_epoch = epoch
-                best_state = _save_state()
-                state_saved = True
+                    # Validation score improved
+                    best_train_results = train_results
+                    best_validation_results = validation_results
+                    best_epoch = epoch
+                    best_state = _save_state()
+                    state_saved = True
 
-                stop_at_epoch = max(
-                        epoch + 1 + val_improve_patience,
-                        int((epoch + 1) * val_improve_patience_factor),
-                        min_epochs)
+                    stop_at_epoch = max(
+                            epoch + 1 + val_improve_patience,
+                            int((epoch + 1) * val_improve_patience_factor),
+                            min_epochs)
 
-                if test_set is not None:
-                    tested = True
-                    test_results = _batch_loop(eval_batch_func, test_set,
-                            batchsize, progress_iter_func,
-                            'Epoch {} test'.format(epoch + 1))
+                    if test_set is not None:
+                        tested = True
+                        if progress_iter_func is not None:
+                            test_prog_iter = functools.partial(
+                                progress_iter_func,
+                                desc='Epoch {} test'.format(epoch + 1))
+                        else:
+                            test_prog_iter = None
+                        test_results = test_set.mean_batch_map(
+                            eval_batch_func, batchsize,
+                            progress_iter_func=test_prog_iter, sum_axis=None)
         else:
             validation_results = None
 
         if not tested and test_set is not None and val_set is None:
             tested = True
-            test_results = _batch_loop(eval_batch_func, test_set, batchsize,
-                                       progress_iter_func,
-                                       'Epoch {} test'.format(epoch + 1))
+            if progress_iter_func is not None:
+                test_prog_iter = functools.partial(
+                    progress_iter_func,
+                    desc='Epoch {} test'.format(epoch + 1))
+            else:
+                test_prog_iter = None
+            test_results = test_set.mean_batch_map(
+                eval_batch_func, batchsize,
+                progress_iter_func=test_prog_iter, sum_axis=None)
 
         if verbosity == VERBOSITY_EPOCH:
             _log_epoch_results(epoch, time.time() - epoch_start_time,
