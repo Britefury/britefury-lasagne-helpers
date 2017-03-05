@@ -1,12 +1,12 @@
-import six
+import six, collections
 import numpy as np
 import skimage.util
 import skimage.transform
-from . import tiling_scheme
+from britefury_lasagne import tiling_scheme
 
 
 
-class ImageWindowExtractor (object):
+class AbstractImageWindowExtractor (object):
     """
     Extracts windows from a list of images according to a tiling scheme.
 
@@ -35,6 +35,7 @@ class ImageWindowExtractor (object):
         self.input_img_shape = img0.shape[:2]
 
         self.tiling_scheme = tiling
+        self.pad_mode = pad_mode
 
         if isinstance(tiling, tiling_scheme.TilingScheme):
             tiling = tiling.apply(self.input_img_shape)
@@ -47,44 +48,18 @@ class ImageWindowExtractor (object):
         else:
             ds_tiling = tiling
         self.tiling = ds_tiling
+        self._extract_tiling = tiling
 
         self.img_shape = ds_tiling.req_data_shape
         self.n_channels = img0.shape[2] if len(img0.shape) > 2 else 1
         self.dtype = img0.dtype
-
-        self.X = np.zeros((self.N_images, self.n_channels) + self.img_shape, dtype=self.dtype)
-        for i, img in enumerate(images):
-            x = self.image_read_fn(img)
-            assert x.shape[:2] == self.input_img_shape
-
-            # Apply padding and cropping
-            cropping = tiling.cropping_as_slices
-            if cropping is not None:
-                x = x[cropping[0], cropping[1]]
-            padding = tiling.padding
-            if padding is not None:
-                if len(x.shape) == 3:
-                    padding.append((0, 0))
-                x = skimage.util.pad(x, padding, mode=pad_mode)
-
-            if downsample is not None:
-                if len(x.shape) > 2:
-                    ds = downsample + (1,) * (len(x.shape)-2)
-                else:
-                    ds = downsample
-                x = skimage.transform.downscale_local_mean(x, ds)
-
-            if len(x.shape) == 2:
-                x = x[None,:,:]
-            else:
-                x = np.rollaxis(x, 2, 0)
-            self.X[i,:,:,:] = x
 
         self.img_windows = ds_tiling.tiles
 
         self.N = self.N_images * self.img_windows[0] * self.img_windows[1]
 
         self.shape = (self.N, self.n_channels) + self.tiling.tile_shape
+
 
 
     def assembler(self, image_n_channels=None, n_images=None, upsample_order=0, pad_mode='reflect', img_dtype=None):
@@ -115,21 +90,8 @@ class ImageWindowExtractor (object):
         return windows
 
     def get_windows_by_separate_coords(self, img_i, window_y, window_x):
-        """
-        img_i - array of shape (N) providing image indices
-        block_y - array of shape (N) providing block y-co-ordinate
-        block_x - array of shape (N) providing block x-co-ordinate
-        """
-        block_y = window_y * self.tiling.step_shape[0]
-        block_x = window_x * self.tiling.step_shape[1]
-        windows = np.zeros((img_i.shape[0], self.n_channels) + self.tiling.tile_shape, dtype=self.dtype)
-        for i in xrange(img_i.shape[0]):
-            win = self.X[img_i[i], :, block_y[i]:block_y[i]+self.tiling.tile_shape[0],
-                  block_x[i]:block_x[i]+self.tiling.tile_shape[1]]
-            windows[i,:,:,:] = win
-        if self.postprocess_fn is not None:
-            windows = self.postprocess_fn(windows)
-        return windows
+        raise NotImplementedError('Abstract for type {}'.format(type(self)))
+
 
     def get_windows_by_coords(self, coords):
         """
@@ -196,6 +158,162 @@ class ImageWindowExtractor (object):
         return 'ImageWindowExtractor(n_images={}, downsample={}, N={}, tiling={}, dtype={})'.format(
             self.N_images, self.downsample, self.N, self.tiling, self.dtype
         )
+
+
+class ImageWindowExtractor (AbstractImageWindowExtractor):
+    """
+    Extracts windows from a list of images according to a tiling scheme.
+
+    Is index-able and has a `batch_iterator` method so can be passed as a dataset to
+    `batch.batch_iterator`, `Trainer.train`, etc.
+    """
+    def __init__(self, images, image_read_fn, tiling, pad_mode='reflect', downsample=None, postprocess_fn=None):
+        """
+
+        :param images: a list of images to read; these can be paths, IDs, objects
+        :param image_read_fn: an image reader function of the form `fn(image) -> np.array[H,W,C]`
+        :param tiling: a `tiling_scheme.TilingScheme` instance that describes how windows are to be extracted
+        `from the data
+        :param postprocess_fn: [optional] a post processing function of the form
+        `postprocess_fn(extracted_windows) -> transformed_extracted_windows` that applies some sort of transformation
+        to the extracted data
+        """
+        super(ImageWindowExtractor, self).__init__(images, image_read_fn, tiling, pad_mode=pad_mode,
+                                                   downsample=downsample, postprocess_fn=postprocess_fn)
+
+        self.X = np.zeros((self.N_images, self.n_channels) + self.img_shape, dtype=self.dtype)
+        for i, img in enumerate(images):
+            x = self.image_read_fn(img)
+            assert x.shape[:2] == self.input_img_shape
+
+            # Apply padding and cropping
+            cropping = self._extract_tiling.cropping_as_slices
+            if cropping is not None:
+                x = x[cropping[0], cropping[1]]
+            padding = self._extract_tiling.padding
+            if padding is not None:
+                if len(x.shape) == 3:
+                    padding.append((0, 0))
+                x = skimage.util.pad(x, padding, mode=pad_mode)
+
+            if downsample is not None:
+                if len(x.shape) > 2:
+                    ds = downsample + (1,) * (len(x.shape)-2)
+                else:
+                    ds = downsample
+                x = skimage.transform.downscale_local_mean(x, ds)
+
+            if len(x.shape) == 2:
+                x = x[None,:,:]
+            else:
+                x = np.rollaxis(x, 2, 0)
+            self.X[i,:,:,:] = x
+
+    def get_windows_by_separate_coords(self, img_i, window_y, window_x):
+        """
+        img_i - array of shape (N) providing image indices
+        block_y - array of shape (N) providing block y-co-ordinate
+        block_x - array of shape (N) providing block x-co-ordinate
+        """
+        block_y = window_y * self.tiling.step_shape[0]
+        block_x = window_x * self.tiling.step_shape[1]
+        windows = np.zeros((img_i.shape[0], self.n_channels) + self.tiling.tile_shape, dtype=self.dtype)
+        for i in xrange(img_i.shape[0]):
+            win = self.X[img_i[i], :, block_y[i]:block_y[i]+self.tiling.tile_shape[0],
+                  block_x[i]:block_x[i]+self.tiling.tile_shape[1]]
+            windows[i,:,:,:] = win
+        if self.postprocess_fn is not None:
+            windows = self.postprocess_fn(windows)
+        return windows
+
+
+class CacheingImageWindowExtractor (AbstractImageWindowExtractor):
+    """
+    Extracts windows from a list of images according to a tiling scheme.
+
+    Is index-able and has a `batch_iterator` method so can be passed as a dataset to
+    `batch.batch_iterator`, `Trainer.train`, etc.
+    """
+    def __init__(self, images, image_read_fn, tiling, cache_size, cache=None,
+                 pad_mode='reflect', downsample=None, postprocess_fn=None):
+        """
+
+        :param images: a list of images to read; these can be paths, IDs, objects
+        :param image_read_fn: an image reader function of the form `fn(image) -> np.array[H,W,C]`
+        :param tiling: a `tiling_scheme.TilingScheme` instance that describes how windows are to be extracted
+        `from the data
+        :param postprocess_fn: [optional] a post processing function of the form
+        `postprocess_fn(extracted_windows) -> transformed_extracted_windows` that applies some sort of transformation
+        to the extracted data
+        """
+        super(CacheingImageWindowExtractor, self).__init__(images, image_read_fn, tiling, pad_mode=pad_mode,
+                                                   downsample=downsample, postprocess_fn=postprocess_fn)
+
+        if cache is None:
+            cache = collections.OrderedDict()
+        self.cache = cache
+        self.cache_size = cache_size
+
+
+    def _read_image(self, img):
+        x = self.image_read_fn(img)
+        assert x.shape[:2] == self.input_img_shape
+
+        # Apply padding and cropping
+        cropping = self._extract_tiling.cropping_as_slices
+        if cropping is not None:
+            x = x[cropping[0], cropping[1]]
+        padding = self._extract_tiling.padding
+        if padding is not None:
+            if len(x.shape) == 3:
+                padding.append((0, 0))
+            x = skimage.util.pad(x, padding, mode=self.pad_mode)
+
+        if self.downsample is not None:
+            if len(x.shape) > 2:
+                ds = self.downsample + (1,) * (len(x.shape)-2)
+            else:
+                ds = self.downsample
+            x = skimage.transform.downscale_local_mean(x, ds)
+
+        if len(x.shape) == 2:
+            x = x[None,:,:]
+        else:
+            x = np.rollaxis(x, 2, 0)
+        return x
+
+    def _get_cached_image(self, img_i):
+        if img_i in self.cache:
+            # Get from the cache and re-insert to maintain LRU order
+            x = self.cache[img_i]
+            del self.cache[img_i]
+            self.cache[img_i] = x
+        else:
+            x = self._read_image(self.images[img_i])
+            self.cache[img_i] = x
+            if len(self.cache) > self.cache_size:
+                keys = self.cache.keys()
+                for key in keys[:-self.cache_size]:
+                    del self.cache[key]
+        return x
+
+    def get_windows_by_separate_coords(self, img_i, window_y, window_x):
+        """
+        img_i - array of shape (N) providing image indices
+        block_y - array of shape (N) providing block y-co-ordinate
+        block_x - array of shape (N) providing block x-co-ordinate
+        """
+        block_y = window_y * self.tiling.step_shape[0]
+        block_x = window_x * self.tiling.step_shape[1]
+        windows = np.zeros((img_i.shape[0], self.n_channels) + self.tiling.tile_shape, dtype=self.dtype)
+        for i in xrange(img_i.shape[0]):
+            x = self._get_cached_image(img_i[i])
+            win = x[:, block_y[i]:block_y[i]+self.tiling.tile_shape[0],
+                  block_x[i]:block_x[i]+self.tiling.tile_shape[1]]
+            windows[i,:,:,:] = win
+        if self.postprocess_fn is not None:
+            windows = self.postprocess_fn(windows)
+        return windows
 
 
 class NonUniformImageWindowExtractor (object):
@@ -669,6 +787,200 @@ class Test_ImageWindowExtractor (unittest.TestCase):
         self.assertTrue((wins.X[1,:,:,:] == img1b[:,:48,:24]).all())
         self.assertTrue((wins.X[2,:,:,:] == img2b[:,:48,:24]).all())
         self.assertTrue((wins.X[3,:,:,:] == img3b[:,:48,:24]).all())
+        self.assertEqual(wins.img_windows, (11, 11))
+        self.assertEqual(wins.N, 11*11*4)
+
+        self.assertTrue((wins.get_windows_by_coords(np.array([[1, 3, 8]]))[0,:,:,:] ==
+                         img1b[:,12:20,16:20]).all())
+        self.assertTrue((wins.get_windows_by_coords(np.array([[1, 3, 8], [2, 9, 6]]))[:,:,:,:] ==
+                         np.append(img1b[None,:,12:20,16:20], img2b[None,:,36:44, 12:16], axis=0)).all())
+
+        self.assertTrue((wins.get_windows(np.array([1*11*11+3*11+8]))[0,:,:,:] ==
+                         img1b[:,12:20,16:20]).all())
+        self.assertTrue((wins.get_windows(np.array([1*11*11+3*11+8, 2*11*11+9*11+6]))[:,:,:,:] ==
+                         np.append(img1b[None,:,12:20,16:20], img2b[None,:,36:44, 12:16], axis=0)).all())
+
+
+        # Reassemble
+        assembler = ImageWindowAssembler(image_shape=(100,100), image_n_channels=3, n_images=4, tiling=tiling,
+                                         upsample=(2,4), img_dtype=img0.dtype)
+        all_win_indices = np.arange(wins.N)
+        assembler.set_windows(all_win_indices, wins.get_windows(all_win_indices))
+
+        self.assertTrue(np.isclose(assembler.get_image(0)[8:-8,8:-8,:], img0_ds_us[8:-8,8:-8,:]).all())
+        self.assertTrue(np.isclose(assembler.get_image(1)[8:-8,8:-8,:], img1_ds_us[8:-8,8:-8,:]).all())
+        self.assertTrue(np.isclose(assembler.get_image(2)[8:-8,8:-8,:], img2_ds_us[8:-8,8:-8,:]).all())
+        self.assertTrue(np.isclose(assembler.get_image(3)[8:-8,8:-8,:], img3_ds_us[8:-8,8:-8,:]).all())
+
+
+class Test_CacheingImageWindowExtractor (unittest.TestCase):
+    def test_simple(self):
+        img0 = np.random.uniform(0.0, 1.0, size=(100,100,3))
+        img1 = np.random.uniform(0.0, 1.0, size=(100,100,3))
+        img2 = np.random.uniform(0.0, 1.0, size=(100,100,3))
+        img3 = np.random.uniform(0.0, 1.0, size=(100,100,3))
+        img0b = np.rollaxis(img0, 2, 0)
+        img1b = np.rollaxis(img1, 2, 0)
+        img2b = np.rollaxis(img2, 2, 0)
+        img3b = np.rollaxis(img3, 2, 0)
+
+        wins = CacheingImageWindowExtractor(images=[img0, img1, img2, img3], image_read_fn=lambda x: x,
+                                            tiling=tiling_scheme.TilingScheme(tile_shape=(16, 16), step_shape=(1,1)),
+                                            cache_size=2)
+
+        self.assertEqual(wins.tiling.tile_shape, (16, 16))
+        self.assertEqual(wins.N_images, 4)
+        self.assertEqual(wins.input_img_shape, (100, 100))
+        self.assertEqual(wins.img_shape, (100, 100))
+        self.assertEqual(wins.n_channels, 3)
+        self.assertEqual(wins.img_windows, (85, 85))
+        self.assertEqual(wins.N, 85*85*4)
+        self.assertEqual(len(wins), 85*85*4)
+
+        self.assertTrue((wins.get_windows_by_coords(np.array([[1, 34, 23]]))[0,:,:,:] ==
+                         img1b[:,34:50,23:39]).all())
+        self.assertTrue((wins.get_windows_by_coords(np.array([[1, 34, 23], [2, 9, 61]]))[:,:,:,:] ==
+                         np.append(img1b[None,:,34:50,23:39], img2b[None,:,9:25, 61:77], axis=0)).all())
+
+        a_i = 1*85*85+34*85+23
+        b_i = 2*85*85+9*85+61
+        # Single index; get_window() method
+        self.assertTrue((wins.get_window(a_i) ==
+                         img1b[:,34:50,23:39]).all())
+        # Single index; index operator
+        self.assertTrue((wins[a_i] ==
+                         img1b[:,34:50,23:39]).all())
+        # Slice; index operator
+        self.assertTrue((wins[a_i:a_i+2] ==
+                         np.append(img1b[None,:,34:50,23:39], img1b[None,:,34:50,24:40], axis=0)).all())
+        # Single index in an array; get_windows() method
+        self.assertTrue((wins.get_windows(np.array([a_i]))[0,:,:,:] ==
+                         img1b[:,34:50,23:39]).all())
+        # Multiple indices in an array; get_windows() method
+        self.assertTrue((wins.get_windows(np.array([a_i, b_i]))[:,:,:,:] ==
+                         np.append(img1b[None,:,34:50,23:39], img2b[None,:,9:25, 61:77], axis=0)).all())
+        # Multiple indices in an array; index operator
+        self.assertTrue((wins[np.array([a_i, b_i])][:,:,:,:] ==
+                         np.append(img1b[None,:,34:50,23:39], img2b[None,:,9:25, 61:77], axis=0)).all())
+        # Multiple indices in a (N,3) array; index operator
+        self.assertTrue((wins[np.array([[1, 34, 23], [2, 9, 61]])][:,:,:,:] ==
+                         np.append(img1b[None,:,34:50,23:39], img2b[None,:,9:25, 61:77], axis=0)).all())
+
+        # Tuple of slices; index operator
+        tos_wins = wins[1:3, 5:20, 15:40]
+        tos_imgs = [img1b, img2b]
+        for i in range(2):
+            for y in range(15):
+                for x in range(25):
+                    self.assertTrue(
+                        (tos_wins[i * 15 * 25 + y * 25 + x, :, :, :] ==
+                         tos_imgs[i][:, 5 + y:21 + y, 15 + x:31 + x]).all())
+
+
+    def test_stepped(self):
+        img0 = np.random.uniform(0.0, 1.0, size=(100,100,3))
+        img1 = np.random.uniform(0.0, 1.0, size=(100,100,3))
+        img2 = np.random.uniform(0.0, 1.0, size=(100,100,3))
+        img3 = np.random.uniform(0.0, 1.0, size=(100,100,3))
+        img0b = np.rollaxis(img0, 2, 0)
+        img1b = np.rollaxis(img1, 2, 0)
+        img2b = np.rollaxis(img2, 2, 0)
+        img3b = np.rollaxis(img3, 2, 0)
+
+        wins = CacheingImageWindowExtractor(images=[img0, img1, img2, img3], image_read_fn=lambda x: x,
+                                            tiling=tiling_scheme.TilingScheme(tile_shape=(15, 15), step_shape=(2,2)),
+                                            cache_size=2)
+
+        self.assertEqual(wins.tiling.tile_shape, (15, 15))
+        self.assertEqual(wins.N_images, 4)
+        self.assertEqual(wins.input_img_shape, (100, 100))
+        self.assertEqual(wins.img_shape, (99, 99))
+        self.assertEqual(wins.n_channels, 3)
+        self.assertEqual(wins.img_windows, (43, 43))
+        self.assertEqual(wins.N, 43*43*4)
+
+        self.assertTrue((wins.get_windows_by_coords(np.array([[1, 34, 23]]))[0,:,:,:] ==
+                         img1b[:,68:83,46:61]).all())
+        self.assertTrue((wins.get_windows_by_coords(np.array([[1, 34, 23], [2, 9, 21]]))[:,:,:,:] ==
+                         np.append(img1b[None,:,68:83,46:61], img2b[None,:,18:33, 42:57], axis=0)).all())
+
+        self.assertTrue((wins.get_windows(np.array([1*43*43+34*43+23]))[0,:,:,:] ==
+                         img1b[:,68:83,46:61]).all())
+        self.assertTrue((wins.get_windows(np.array([1*43*43+34*43+23, 2*43*43+9*43+21]))[:,:,:,:] ==
+                         np.append(img1b[None,:,68:83,46:61], img2b[None,:,18:33, 42:57], axis=0)).all())
+
+
+    def test_pad_crop_and_reassemble(self):
+        img0 = np.random.uniform(0.0, 1.0, size=(100,100,3))
+        img1 = np.random.uniform(0.0, 1.0, size=(100,100,3))
+        img2 = np.random.uniform(0.0, 1.0, size=(100,100,3))
+        img3 = np.random.uniform(0.0, 1.0, size=(100,100,3))
+        img0b = np.rollaxis(img0, 2, 0)
+        img1b = np.rollaxis(img1, 2, 0)
+        img2b = np.rollaxis(img2, 2, 0)
+        img3b = np.rollaxis(img3, 2, 0)
+
+        tiling = tiling_scheme.TilingScheme(tile_shape=(16, 16), step_shape=(1,1), data_pad_or_crop=[(4,4), (-3,-3)])
+        wins = CacheingImageWindowExtractor(images=[img0, img1, img2, img3], image_read_fn=lambda x: x, tiling=tiling,
+                                            cache_size=2)
+
+        self.assertEqual(wins.tiling.tile_shape, (16, 16))
+        self.assertEqual(wins.N_images, 4)
+        self.assertEqual(wins.input_img_shape, (100, 100))
+        self.assertEqual(wins.img_shape, (108, 94))
+        self.assertEqual(wins.n_channels, 3)
+        self.assertEqual(wins.img_windows, (93, 79))
+        self.assertEqual(wins.N, 93*79*4)
+
+        self.assertTrue((wins.get_windows_by_coords(np.array([[1, 34, 23]]))[0,:,:,:] ==
+                         img1b[:,30:46,26:42]).all())
+        self.assertTrue((wins.get_windows_by_coords(np.array([[1, 34, 23], [2, 9, 61]]))[:,:,:,:] ==
+                         np.append(img1b[None,:,30:46,26:42], img2b[None,:,5:21, 64:80], axis=0)).all())
+
+        self.assertTrue((wins.get_windows(np.array([1*93*79+34*79+23]))[0,:,:,:] ==
+                         img1b[:,30:46,26:42]).all())
+        self.assertTrue((wins.get_windows(np.array([1*93*79+34*79+23, 2*93*79+9*79+61]))[:,:,:,:] ==
+                         np.append(img1b[None,:,30:46,26:42], img2b[None,:,5:21, 64:80], axis=0)).all())
+
+        # Reassemble
+        assembler = ImageWindowAssembler(image_shape=(100,100), image_n_channels=3, n_images=4, tiling=tiling,
+                                         img_dtype=img0.dtype)
+        all_win_indices = np.arange(wins.N)
+        assembler.set_windows(all_win_indices, wins.get_windows(all_win_indices))
+
+        self.assertTrue((assembler.get_image(0)[:,3:-3,:] == img0[:,3:-3,:]).all())
+        self.assertTrue((assembler.get_image(1)[:,3:-3,:] == img1[:,3:-3,:]).all())
+        self.assertTrue((assembler.get_image(2)[:,3:-3,:] == img2[:,3:-3,:]).all())
+        self.assertTrue((assembler.get_image(3)[:,3:-3,:] == img3[:,3:-3,:]).all())
+
+
+    def test_stepped_downsampled(self):
+        img0 = np.random.uniform(0.0, 1.0, size=(100,100,3))
+        img1 = np.random.uniform(0.0, 1.0, size=(100,100,3))
+        img2 = np.random.uniform(0.0, 1.0, size=(100,100,3))
+        img3 = np.random.uniform(0.0, 1.0, size=(100,100,3))
+        img0_ds = skimage.transform.downscale_local_mean(img0, (2,4,1))
+        img1_ds = skimage.transform.downscale_local_mean(img1, (2,4,1))
+        img2_ds = skimage.transform.downscale_local_mean(img2, (2,4,1))
+        img3_ds = skimage.transform.downscale_local_mean(img3, (2,4,1))
+        img0_ds_us = skimage.transform.rescale(img0_ds, (2.0, 4.0), order=0)
+        img1_ds_us = skimage.transform.rescale(img1_ds, (2.0, 4.0), order=0)
+        img2_ds_us = skimage.transform.rescale(img2_ds, (2.0, 4.0), order=0)
+        img3_ds_us = skimage.transform.rescale(img3_ds, (2.0, 4.0), order=0)
+        img0b = np.rollaxis(img0_ds, 2, 0)
+        img1b = np.rollaxis(img1_ds, 2, 0)
+        img2b = np.rollaxis(img2_ds, 2, 0)
+        img3b = np.rollaxis(img3_ds, 2, 0)
+
+        tiling = tiling_scheme.TilingScheme(tile_shape=(16, 16), step_shape=(8,8))
+        wins = CacheingImageWindowExtractor(images=[img0, img1, img2, img3], image_read_fn=lambda x: x,
+                                    tiling=tiling, cache_size=2, downsample=(2,4))
+
+        self.assertEqual(wins.tiling.tile_shape, (8, 4))
+        self.assertEqual(wins.N_images, 4)
+        self.assertEqual(wins.input_img_shape, (100, 100))
+        self.assertEqual(wins.img_shape, (48, 24))
+        self.assertEqual(wins.n_channels, 3)
         self.assertEqual(wins.img_windows, (11, 11))
         self.assertEqual(wins.N, 11*11*4)
 

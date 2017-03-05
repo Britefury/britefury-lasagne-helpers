@@ -6,7 +6,7 @@ import cPickle
 
 import joblib
 
-from . import batch
+from . import data_source
 
 SharedConstant = collections.namedtuple('SharedConstant', ['value'])
 _SharedRef = collections.namedtuple('_SharedRef', ['key'])
@@ -130,7 +130,7 @@ class WorkerPool (object):
         preparation is split among multiple processes. The batch iterator returned is suitable for passing to methods
         of the `Trainer` class.
 
-        NOTE: `dataset` should be a sequence of array-likes (see `batch.is_arraylike` for definition);
+        NOTE: `dataset` should be a data source (see `data_source` for definition);
         batch iterators cannot be passed here.
         ALSO NOTE: the objects that are passed in the sequence `dataset` SHOULD BE LIGHTWEIGHT as they must
         be passed to the child processes via serialization/deserialization, so you most probably *don't* want
@@ -163,7 +163,7 @@ class WorkerPool (object):
         ...
         ... trainer.train(batch_iterator, None, None, batchsize=128)
 
-        :param dataset:  sequence of array-likes (see `batch.is_arraylike) (e.g. NumPy arrays are array-likes
+        :param dataset: data source (see `data_source`) (e.g. NumPy arrays are array-likes
         but should not normally be used here for performance and memory usage reasons) - one for each variable
         (input/target/etc) - where each array-like contains an entry for each sample in the complete dataset.
         The use of array-likes allows the use of NumPy arrays or other objects that support `__len__` and
@@ -173,31 +173,33 @@ class WorkerPool (object):
         :return: a `ParallelBatchIterator` instance that has a `batch_iterator` method and is therefore suitable
         for use with methods of the `Trainer` class.
         """
-        if not batch.is_sequence_of_arraylike(dataset):
-            raise TypeError('dataset must be a sequence of array-likes (each one should support __len__ and '
-                            '__getitem__ where __getitem__ should take a numpy int array as an index')
         return _WorkStreamParallelBatchIterator(dataset, batch_buffer_size, self)
 
 
 def _extract_batch_by_index_from_sequence_of_iterables(data, batch_indices):
-    return [d[batch_indices] for d in data]
+    return data.samples_by_indices(batch_indices)
 
-class _WorkStreamParallelBatchIterator (object):
+class _WorkStreamParallelBatchIterator (data_source.AbstractDataSource):
     def __init__(self, dataset, batch_buffer_size, pool):
+        assert isinstance(dataset, data_source.ArrayDataSource)
         self.__dataset = dataset
-        self.__num_samples = batch.length_of_arraylikes_in_sequence(dataset)
+        self.__num_samples = dataset.num_samples()
         self.__batch_buffer_size = batch_buffer_size
         self.__pool = pool
 
+    def num_samples(self, **kwargs):
+        return self.__dataset.num_samples(**kwargs)
 
-    def batch_iterator(self, batchsize, shuffle_rng=None):
+
+    def batch_iterator(self, batch_size, shuffle=None, **kwargs):
+        shuffle = self._get_shuffle_rng(shuffle)
         def task_generator():
             try:
                 indices = np.arange(self.__num_samples)
-                if shuffle_rng is not None:
-                    shuffle_rng.shuffle(indices)
-                for i in range(0, self.__num_samples, batchsize):
-                    batch_ndx = indices[i:i + batchsize]
+                if shuffle is not None:
+                    shuffle.shuffle(indices)
+                for i in range(0, self.__num_samples, batch_size):
+                    batch_ndx = indices[i:i + batch_size]
                     yield _extract_batch_by_index_from_sequence_of_iterables, (SharedConstant(self.__dataset), batch_ndx)
             except Exception as e:
                 print('Caught exception {}'.format(e))

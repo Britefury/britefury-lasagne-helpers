@@ -4,7 +4,7 @@ from functools import partial
 import theano
 import theano.tensor as T
 import lasagne
-from . import trainer, dnn_objective, batch
+from . import trainer, dnn_objective, data_source
 
 
 def _is_sequence_of_layers(xs):
@@ -125,11 +125,11 @@ class BasicDNN (object):
 
         # Construct a training function
         self.train = partial(trainer.train,
-                             train_batch_func=self._train_fn, train_log_func=self._train_log,
+                             train_batch_func=self._train_fn, train_log_msg=self._train_log,
                              train_epoch_results_check_func=self._check_train_epoch_results,
-                             eval_batch_func=self._val_fn, eval_log_func=self._eval_log,
+                             eval_batch_func=self._val_fn, eval_log_msg=self._eval_log,
                              val_improved_func=self._score_improved,
-                             epoch_log_func=self._epoch_log, layer_to_restore=final_layers)
+                             epoch_log_msg=self._epoch_log, layer_to_restore=final_layers)
 
 
     def load_params(self, params_path, include_updates=False):
@@ -244,25 +244,18 @@ class BasicDNN (object):
         return ''.join(items)
 
 
-    def predict(self, X, batchsize=500, batch_xform_fn=None):
+    def predict(self, X, batchsize=500):
         """
         Evaluate the network, returning its predictions
 
-        :param X: input data, in the same form as described in the `Trainer.train` and `Trainer.batch_iterator` methods
+        :param X: input data as a data source
         :param batchsize: the mini-batch size
-        :param batch_xform_fn: optional pre-process function to transform mini-batches of input data before passing
-        them to the network prediction function
         :return: a list of predicted outputs, where each entry corresponds to a training objective
         e.g. a simple classifier will return the list `[pred_prob]` where `pred_prob` is the predicted class
         probabilities
         """
         y = []
-        for batch_data in batch.batch_iterator(X, batchsize, None):
-            if batch_xform_fn is not None:
-                batch_data = batch_xform_fn(batch_data)
-            y_batch = self._predict_fn(*batch_data)
-            y.append(y_batch)
-        return [np.concatenate(chn, axis=0) for chn in zip(*y)]
+        return data_source.coerce_data_source(X).batch_map(self._predict_fn, batch_size=batchsize)
 
 
 class BasicClassifierDNN (BasicDNN):
@@ -290,14 +283,12 @@ class BasicClassifierDNN (BasicDNN):
     def temperature(self, t):
         self._classifier_objective.temperature = t
 
-    def predict(self, X, batchsize=500, batch_xform_fn=None, temperature=None):
+    def predict(self, X, batchsize=500, temperature=None):
         """
         Evaluate the network, returning its predictions
 
-        :param X: input data, in the same form as described in the `trainer.train` and `batch.batch_iterator` functions
+        :param X: input data as a data source
         :param batchsize: the mini-batch size
-        :param batch_xform_fn: optional pre-process function to transform mini-batches of input data before passing
-        them to the network prediction function
         :return: a list of predicted outputs, where each entry corresponds to a training objective
         e.g. a simple classifier will return the list `[pred_prob]` where `pred_prob` is the predicted class
         probabilities
@@ -306,8 +297,7 @@ class BasicClassifierDNN (BasicDNN):
         if temperature is not None:
             old_temperature = self.temperature
             self.temperature = temperature
-        res = super(BasicClassifierDNN, self).predict(X, batchsize=batchsize,
-                                                      batch_xform_fn=batch_xform_fn)
+        res = super(BasicClassifierDNN, self).predict(X, batchsize=batchsize)
         if temperature is not None:
             self.temperature = old_temperature
 
