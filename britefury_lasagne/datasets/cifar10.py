@@ -61,3 +61,4 @@ class CIFAR10 (object):
             self.train_X, self.val_X = train_X[:-n_val], train_X[-n_val:]
             self.train_y, self.val_y = train_y[:-n_val], train_y[-n_val:]
         self.test_X, self.test_y = test_X, test_y
+        self.class_names = ['airplane', 'automobile', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck']
