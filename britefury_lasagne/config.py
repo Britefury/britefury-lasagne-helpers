@@ -57,8 +57,11 @@ def download(path, source_url):
     if not os.path.exists(dir_path):
         os.makedirs(dir_path)
     if not os.path.exists(path):
-        print('Downloading {0} to {1}'.format(source_url, path))
-        urlretrieve(source_url, path)
+        filename = source_url.split('/')[-1]
+        def _progress(count, block_size, total_size):
+            sys.stdout.write('\rDownloading {} {:.2%}'.format(filename, float(count * block_size) / float(total_size)))
+            sys.stdout.flush()
+        urlretrieve(source_url, path, reporthook=_progress)
     return path
 
 
