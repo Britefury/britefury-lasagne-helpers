@@ -282,15 +282,16 @@ class CacheingImageWindowExtractor (AbstractImageWindowExtractor):
             x = np.rollaxis(x, 2, 0)
         return x
 
-    def _get_cached_image(self, img_i):
-        if img_i in self.cache:
+    def _get_cached_image(self, img):
+        img_id = id(img)
+        if img_id in self.cache:
             # Get from the cache and re-insert to maintain LRU order
-            x = self.cache[img_i]
-            del self.cache[img_i]
-            self.cache[img_i] = x
+            x = self.cache[img_id]
+            del self.cache[img_id]
+            self.cache[img_id] = x
         else:
-            x = self._read_image(self.images[img_i])
-            self.cache[img_i] = x
+            x = self._read_image(img)
+            self.cache[img_id] = x
             if len(self.cache) > self.cache_size:
                 keys = self.cache.keys()
                 for key in keys[:-self.cache_size]:
@@ -307,7 +308,7 @@ class CacheingImageWindowExtractor (AbstractImageWindowExtractor):
         block_x = window_x * self.tiling.step_shape[1]
         windows = np.zeros((img_i.shape[0], self.n_channels) + self.tiling.tile_shape, dtype=self.dtype)
         for i in xrange(img_i.shape[0]):
-            x = self._get_cached_image(img_i[i])
+            x = self._get_cached_image(self.images[img_i[i]])
             win = x[:, block_y[i]:block_y[i]+self.tiling.tile_shape[0],
                   block_x[i]:block_x[i]+self.tiling.tile_shape[1]]
             windows[i,:,:,:] = win
@@ -317,7 +318,8 @@ class CacheingImageWindowExtractor (AbstractImageWindowExtractor):
 
 
 class NonUniformImageWindowExtractor (object):
-    def __init__(self, images, image_read_fn, tiling, pad_mode='reflect', downsample=None, postprocess_fn=None):
+    def __init__(self, images, image_read_fn, tiling, pad_mode='reflect', downsample=None, postprocess_fn=None,
+                 cache_size=None):
         """
 
         :param images: a list of images to read; these can be paths, IDs, objects
@@ -330,6 +332,13 @@ class NonUniformImageWindowExtractor (object):
         """
         if tiling.ndim != 2:
             raise ValueError('tiling should have 2 dimensions, not {}'.format(tiling.ndim))
+
+        self.cache_size = cache_size
+
+        if cache_size is not None:
+            self.cache = collections.OrderedDict()
+        else:
+            self.cache = None
 
         self.tiling_scheme = tiling
         self.N_images = len(images)
@@ -361,8 +370,14 @@ class NonUniformImageWindowExtractor (object):
 
 
     def __new_extractor(self, images, shape, tiling, pad_mode, downsample, postprocess_fn):
-        extractor = ImageWindowExtractor(images, lambda x: x, tiling, pad_mode=pad_mode, downsample=downsample,
-                                         postprocess_fn=postprocess_fn)
+        if self.cache is None:
+            extractor = ImageWindowExtractor(images, lambda x: x, tiling, pad_mode=pad_mode, downsample=downsample,
+                                             postprocess_fn=postprocess_fn)
+        else:
+            extractor = CacheingImageWindowExtractor(
+                images, lambda x: x, tiling, cache_size=self.cache_size, cache=self.cache,
+                pad_mode=pad_mode, downsample=downsample, postprocess_fn=postprocess_fn)
+
         self.extractors.append(extractor)
         pos = self.extractor_image_offsets[-1]
         self.extractor_image_offsets.append(pos + len(images))
@@ -1021,6 +1036,62 @@ class Test_NonUniformImageWindowExtractor (unittest.TestCase):
 
         wins = NonUniformImageWindowExtractor(images=[img0, img1, img2, img3], image_read_fn=lambda x: x,
                                               tiling=tiling_scheme.TilingScheme(tile_shape=(16, 16), step_shape=(1, 1)))
+
+        N0 = 0
+        N1 = N0 + 85 * 85
+        N2 = N1 + 75 * 95
+        N3 = N2 + 80 * 90
+        N4 = N3 + 90 * 80
+
+        self.assertEqual(wins.tiling_scheme.tile_shape, (16, 16))
+        self.assertEqual(wins.N_images, 4)
+        self.assertEqual(wins.extractors[0].img_windows, (85, 85))
+        self.assertEqual(wins.extractors[1].img_windows, (75, 95))
+        self.assertEqual(wins.extractors[2].img_windows, (80, 90))
+        self.assertEqual(wins.extractors[3].img_windows, (90, 80))
+        self.assertEqual(wins.N, N4)
+        self.assertEqual(len(wins), N4)
+
+        self.assertTrue((wins.get_windows_by_coords(np.array([[1, 34, 23]]))[0, :, :, :] ==
+                         img1b[:, 34:50, 23:39]).all())
+        self.assertTrue((wins.get_windows_by_coords(np.array([[1, 34, 23], [2, 9, 61]]))[:, :, :, :] ==
+                         np.append(img1b[None, :, 34:50, 23:39], img2b[None, :, 9:25, 61:77], axis=0)).all())
+
+        a_i = N1 + 34 * 95 + 23
+        b_i = N2 + 9 * 90 + 61
+        # Single index; get_window() method
+        self.assertTrue((wins.get_window(a_i) ==
+                         img1b[:, 34:50, 23:39]).all())
+        # Single index; index operator
+        self.assertTrue((wins[a_i] ==
+                         img1b[:, 34:50, 23:39]).all())
+        # Slice; index operator
+        self.assertTrue((wins[a_i:a_i + 2] ==
+                         np.append(img1b[None, :, 34:50, 23:39], img1b[None, :, 34:50, 24:40], axis=0)).all())
+        # Single index in an array; get_windows() method
+        self.assertTrue((wins.get_windows(np.array([a_i]))[0, :, :, :] ==
+                         img1b[:, 34:50, 23:39]).all())
+        # Multiple indices in an array; get_windows() method
+        self.assertTrue((wins.get_windows(np.array([a_i, b_i]))[:, :, :, :] ==
+                         np.append(img1b[None, :, 34:50, 23:39], img2b[None, :, 9:25, 61:77], axis=0)).all())
+        # Multiple indices in an array; index operator
+        self.assertTrue((wins[np.array([a_i, b_i])][:, :, :, :] ==
+                         np.append(img1b[None, :, 34:50, 23:39], img2b[None, :, 9:25, 61:77], axis=0)).all())
+
+    def test_simple_cached(self):
+        # Images of non-uniform size
+        img0 = np.random.uniform(0.0, 1.0, size=(100, 100, 3))
+        img1 = np.random.uniform(0.0, 1.0, size=(90, 110, 3))
+        img2 = np.random.uniform(0.0, 1.0, size=(95, 105, 3))
+        img3 = np.random.uniform(0.0, 1.0, size=(105, 95, 3))
+        img0b = np.rollaxis(img0, 2, 0)
+        img1b = np.rollaxis(img1, 2, 0)
+        img2b = np.rollaxis(img2, 2, 0)
+        img3b = np.rollaxis(img3, 2, 0)
+
+        wins = NonUniformImageWindowExtractor(images=[img0, img1, img2, img3], image_read_fn=lambda x: x,
+                                              tiling=tiling_scheme.TilingScheme(tile_shape=(16, 16), step_shape=(1, 1)),
+                                              cache_size=2)
 
         N0 = 0
         N1 = N0 + 85 * 85
