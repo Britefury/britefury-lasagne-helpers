@@ -187,8 +187,9 @@ def ground_truth_boxes_to_y(anchor_grid_origin, anchor_grid_cell_size, anchor_gr
     thresholds `coverage_lower_threshold` and `coverage_upper_threshold` then the 'obj_mask' classification is 0,
     1 otherwise
     `y_rel_boxes` is a float32 array that indicates the size of a ground truth box relative to the anchor;
-    it takes the form of `(rel_y, rel_x, rel_h, rel_w)` where `rel_y` and `rel_x` is the position of the ground
-    truth box relative to that of the anchor box divided by the anchor boxes' height and width respectively.
+    it takes the form of `(rel_y, rel_x, rel_h, rel_w)` where `rel_y` and `rel_x` is 2x the position of the ground
+    truth box relative to that of the anchor box divided by the anchor boxes' height and width respectively
+    (e.g. `rel_y = (abs_y - anchor_centre_y) * 2 / anchor_height`).
     `rel_h` and `rel_w` are the log of the ratios of the sizes of the ground truth box and the anchor box;
     `rel_h == log(gt_box_h / anchor_box_h)`.
     `y_boxes_mask` is a float32 array that indicates if there is learnable data in the corresponding entry
@@ -307,7 +308,52 @@ def ground_truth_boxes_to_y(anchor_grid_origin, anchor_grid_cell_size, anchor_gr
 
     return y_objectness, y_obj_mask, y_rel_boxes, y_boxes_mask
 
+def y_to_boxes(y_objectness, y_relboxes, anchor_grid_origin, anchor_grid_cell_size, anchor_grid_shape,
+               anchor_box_sizes, img_shape):
+    """
+    Transform training targets - either ground truths or predictions - into predicted bounding boxes.
 
+    :param y_objectness: an integer array of shape `(N,S,T)` where
+    `S,T = anchor_grid_shape` and `N ==  anchor_box_sizes.shape[0]` that give the predicted classes of the bounding
+    boxes; if there is only 1 class, `0` should represent background or no object present and `1` should represent
+    foreground or object present.
+    :param y_relboxes: a float32 array of shape `(4,N,S,T)` that indicates the position and size of a box
+    relative to the cirresponding anchor (see `anchor_box_sizes` parameter); it takes the form of
+    `(rel_y, rel_x, rel_h, rel_w)` where `rel_y` and `rel_x` is the position of the ground truth box relative to that
+    of the anchor box divided by the anchor boxes' height and width respectively
+    (e.g. `rel_y = (abs_y - anchor_centre_y) * 2 / anchor_height`). `rel_h` and `rel_w` are the log of
+    the ratios of the sizes of the ground truth box and the anchor box; `rel_h == log(gt_box_h / anchor_box_h)`.
+    :param anchor_grid_origin: the position of the centre of the anchor at grid point 0,0
+    as a `(2,)` array of the form `(centre_y, centre_x)`
+    :param anchor_grid_cell_size: the offset between centres of anchor points as a `(2,)` array
+    of the form `(delta_y, delta_x)`
+    :param anchor_grid_shape: the size of the grid of anchors of the form `(n_y, n_x)`
+    :param anchor_box_sizes: the list of anchor box sizes in the form of a `(N,2)` array, where
+    each row is of the form `(height, width)`
+    :param img_shape: The shape of the image as a `(2,)` array of the form `(height, width)`
+    :return: tuple of (boxes, box_classes), where:
+    `boxes` is a list of boxes as a `(M,4)` array, where each row is of the form
+    `(centre_y, centre_x, height, width)`
+    `box_classes` is a `(M,)` array where each element is the predicted class of the box
+    """
+    boxes = []
+    box_classes = []
+    for cell_y in range(anchor_grid_shape[0]):
+        y = float(anchor_grid_origin[0] + cell_y * anchor_grid_cell_size[0])
+        for cell_x in range(anchor_grid_shape[1]):
+            x = float(anchor_grid_origin[1] + cell_x * anchor_grid_cell_size[1])
+            for anchor_i in range(anchor_box_sizes.shape[0]):
+                y_cls = y_objectness[anchor_i, cell_y, cell_x]
+                if y_cls != 0:
+                    cen_y = y_relboxes[2,anchor_i,cell_y,cell_x] * anchor_box_sizes[anchor_i,0] * 0.5 + y
+                    cen_x = y_relboxes[3,anchor_i,cell_y,cell_x] * anchor_box_sizes[anchor_i,1] * 0.5 + x
+                    h = np.exp(y_relboxes[0,anchor_i,cell_y,cell_x]) * anchor_box_sizes[anchor_i,0]
+                    w = np.exp(y_relboxes[1,anchor_i,cell_y,cell_x]) * anchor_box_sizes[anchor_i,1]
+
+                    box_classes.append(y_cls)
+                    boxes.append([cen_y, cen_x, h, w])
+
+    return np.array(boxes), np.array(box_classes)
 
 
 import unittest
