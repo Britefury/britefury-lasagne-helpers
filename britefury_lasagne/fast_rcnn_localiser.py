@@ -447,7 +447,7 @@ def non_maximal_suppression(bboxes, box_conf, iou_threshold):
     """
     Implementation heavily inspired by https://github.com/rbgirshick/py-faster-rcnn/blob/master/lib/nms/py_cpu_nms.py
     """
-    order = np.argsort(box_conf)[::-1]
+    order = np.argsort(-box_conf)
     n = box_conf.shape[0]
 
     y0 = bboxes[:, 0]
@@ -481,7 +481,53 @@ def non_maximal_suppression(bboxes, box_conf, iou_threshold):
         return np.zeros((0,), dtype=int)
 
 
+def evaluate_predictions(gt_bboxes, pred_bboxes, pred_box_conf, iou_threshold):
+    order = np.argsort(-pred_box_conf)
+    pred_bboxes = pred_bboxes[order]
+    pred_box_conf = pred_box_conf[order]
 
+    n_gt = gt_bboxes.shape[0]
+    gt_detected = np.zeros((gt_bboxes.shape[0],), dtype=bool)
+    true_pos = np.zeros((order.shape[0],), dtype=int)
+    false_pos = np.zeros((order.shape[0],), dtype=int)
+
+    gt_h = np.maximum(gt_bboxes[:,2] - gt_bboxes[:,0], 0.0)
+    gt_w = np.maximum(gt_bboxes[:,3] - gt_bboxes[:,1], 0.0)
+    gt_area = gt_h * gt_w
+
+    pred_h = np.maximum(pred_bboxes[:,2] - pred_bboxes[:,0], 0.0)
+    pred_w = np.maximum(pred_bboxes[:,3] - pred_bboxes[:,1], 0.0)
+    pred_area = pred_h * pred_w
+
+    for pred_i in range(order.shape[0]):
+        pred_bb = pred_bboxes[pred_i, :]
+
+        inter_y0 = np.maximum(pred_bb[0], gt_bboxes[:, 0])
+        inter_x0 = np.maximum(pred_bb[1], gt_bboxes[:, 1])
+        inter_y1 = np.minimum(pred_bb[2], gt_bboxes[:, 2])
+        inter_x1 = np.minimum(pred_bb[3], gt_bboxes[:, 3])
+
+        inter_h = np.maximum(inter_y1 - inter_y0, 0.0)
+        inter_w = np.maximum(inter_x1 - inter_x0, 0.0)
+        inter_area = inter_h * inter_w
+        iou = inter_area / (pred_area[pred_i] + gt_area - inter_area)
+
+        max_iou = np.max(iou)
+        max_iou_gt_ndx = np.argmax(iou)
+
+        if max_iou > iou_threshold:
+            if not gt_detected[max_iou_gt_ndx]:
+                true_pos[pred_i] = 1
+                gt_detected[max_iou_gt_ndx] = True
+            else:
+                false_pos[pred_i] = 1
+        else:
+            false_pos[pred_i] = 1
+
+    true_pos = np.cumsum(true_pos)
+    false_pos = np.cumsum(false_pos)
+
+    return pred_box_conf, true_pos, false_pos, n_gt
 
 
 import unittest
