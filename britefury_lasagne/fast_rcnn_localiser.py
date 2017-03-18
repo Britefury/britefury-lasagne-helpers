@@ -308,15 +308,19 @@ def ground_truth_boxes_to_y(anchor_grid_origin, anchor_grid_cell_size, anchor_gr
 
     return y_objectness, y_obj_mask, y_rel_boxes, y_boxes_mask
 
-def y_to_boxes(y_objectness, y_relboxes, anchor_grid_origin, anchor_grid_cell_size, anchor_grid_shape,
+def y_to_boxes(y_obj_class, y_obj_confidence, y_relboxes, anchor_grid_origin, anchor_grid_cell_size, anchor_grid_shape,
                anchor_box_sizes, img_shape):
     """
     Transform training targets - either ground truths or predictions - into predicted bounding boxes.
 
-    :param y_objectness: an integer array of shape `(N,S,T)` where
+    :param y_obj_class: an integer array of shape `(N,S,T)` where
     `S,T = anchor_grid_shape` and `N ==  anchor_box_sizes.shape[0]` that give the predicted classes of the bounding
     boxes; if there is only 1 class, `0` should represent background or no object present and `1` should represent
     foreground or object present.
+    :param y_obj_confidence: None or a float or a float array of shape `(N,S,T)` where
+    `S,T = anchor_grid_shape` and `N ==  anchor_box_sizes.shape[0]` that give the confidence of the class predictions
+    in `y_obj_class`. If `None`, a value of `1.0` is used for all confidence values, if a float is used, it is
+    used as a constant confience for all class predictions.
     :param y_relboxes: a float32 array of shape `(4,N,S,T)` that indicates the position and size of a box
     relative to the cirresponding anchor (see `anchor_box_sizes` parameter); it takes the form of
     `(rel_y, rel_x, rel_h, rel_w)` where `rel_y` and `rel_x` is the position of the ground truth box relative to that
@@ -331,29 +335,40 @@ def y_to_boxes(y_objectness, y_relboxes, anchor_grid_origin, anchor_grid_cell_si
     :param anchor_box_sizes: the list of anchor box sizes in the form of a `(N,2)` array, where
     each row is of the form `(height, width)`
     :param img_shape: The shape of the image as a `(2,)` array of the form `(height, width)`
-    :return: tuple of (boxes, box_classes), where:
-    `boxes` is a list of boxes as a `(M,4)` array, where each row is of the form
-    `(centre_y, centre_x, height, width)`
+    :return: tuple of (boxes, box_classes, box_conf), where:
+    `boxes` is a list of boxes as a `(M,5)` array, where each row is of the form
+    `(centre_y, centre_x, height, width, confidence)`
     `box_classes` is a `(M,)` array where each element is the predicted class of the box
+    `box_conf` is a `(M,)` array where each element is confidence of the box class prediction
     """
-    boxes = []
-    box_classes = []
-    for cell_y in range(anchor_grid_shape[0]):
-        y = float(anchor_grid_origin[0] + cell_y * anchor_grid_cell_size[0])
-        for cell_x in range(anchor_grid_shape[1]):
-            x = float(anchor_grid_origin[1] + cell_x * anchor_grid_cell_size[1])
-            for anchor_i in range(anchor_box_sizes.shape[0]):
-                y_cls = y_objectness[anchor_i, cell_y, cell_x]
-                if y_cls != 0:
-                    cen_y = y_relboxes[2,anchor_i,cell_y,cell_x] * anchor_box_sizes[anchor_i,0] * 0.5 + y
-                    cen_x = y_relboxes[3,anchor_i,cell_y,cell_x] * anchor_box_sizes[anchor_i,1] * 0.5 + x
-                    h = np.exp(y_relboxes[0,anchor_i,cell_y,cell_x]) * anchor_box_sizes[anchor_i,0]
-                    w = np.exp(y_relboxes[1,anchor_i,cell_y,cell_x]) * anchor_box_sizes[anchor_i,1]
+    box_mask = y_obj_class != 0
+    ndx = np.indices(box_mask.shape).reshape((3, -1))[:, box_mask.flatten()].T
 
-                    box_classes.append(y_cls)
-                    boxes.append([cen_y, cen_x, h, w])
+    anchor_i = ndx[:, 0]
+    cell_y = ndx[:, 1]
+    cell_x = ndx[:, 2]
+    y = cell_y.astype(float) * anchor_grid_cell_size[0] + anchor_grid_origin[0]
+    x = cell_x.astype(float) * anchor_grid_cell_size[1] + anchor_grid_origin[1]
 
-    return np.array(boxes), np.array(box_classes)
+    cen_y = y_relboxes[2, anchor_i, cell_y, cell_x] * anchor_box_sizes[anchor_i, 0] * 0.5 + y
+    cen_x = y_relboxes[3, anchor_i, cell_y, cell_x] * anchor_box_sizes[anchor_i, 1] * 0.5 + x
+    h = np.exp(y_relboxes[0, anchor_i, cell_y, cell_x]) * anchor_box_sizes[anchor_i, 0]
+    w = np.exp(y_relboxes[1, anchor_i, cell_y, cell_x]) * anchor_box_sizes[anchor_i, 1]
+
+    boxes = np.concatenate([cen_y[:,None], cen_x[:,None], h[:,None], w[:,None]], axis=1)
+    if y_obj_confidence is None:
+        box_conf = np.ones((boxes.shape[0],))
+    elif isinstance(y_obj_confidence, float):
+        box_conf = np.ones((boxes.shape[0],)) * y_obj_confidence
+    elif isinstance(y_obj_confidence, np.ndarray):
+        box_conf = y_obj_confidence[anchor_i, cell_y, cell_x]
+    else:
+        raise TypeError('y_obj_confidence should be None, a float or a NumPy array, not a {}'.format(
+            type(y_obj_confidence)))
+
+    box_classes = y_obj_class[anchor_i, cell_y, cell_x]
+
+    return boxes, box_classes, box_conf
 
 
 import unittest
