@@ -43,11 +43,14 @@ def _load_stl(filename='stl10_binary.tar.gz', load_unlabeled=False):
 
     # Load them
     train_X = np.fromfile(open(train_X_path, 'rb'), dtype=np.uint8).reshape((-1, 3, 96, 96)).transpose(0, 1, 3, 2)
+    train_X = train_X.astype(np.float32) / 255.0
     train_y = np.fromfile(open(train_y_path, 'rb'), dtype=np.uint8).astype(np.int32) - 1
     test_X = np.fromfile(open(test_X_path, 'rb'), dtype=np.uint8).reshape((-1, 3, 96, 96)).transpose(0, 1, 3, 2)
+    test_X = test_X.astype(np.float32) / 255.0
     test_y = np.fromfile(open(test_y_path, 'rb'), dtype=np.uint8).astype(np.int32) - 1
     if load_unlabeled:
         unlabeled_X = np.fromfile(open(unlabeled_X_path, 'rb'), dtype=np.uint8).reshape((-1, 3, 96, 96)).transpose(0, 1, 3, 2)
+        unlabeled_X = unlabeled_X.astype(np.float32) / 255.0
     else:
         unlabeled_X = None
 
@@ -62,8 +65,9 @@ def _load_stl(filename='stl10_binary.tar.gz', load_unlabeled=False):
 
 
 class STL (object):
-    def __init__(self, n_val_folds=1):
-        train_X, train_y, test_X, test_y, unlabeled_X, class_names, train_fold_indices = _load_stl()
+    def __init__(self, n_val_folds=1, load_unlabeled=False):
+        train_X, train_y, test_X, test_y, unlabeled_X, class_names, train_fold_indices = \
+                _load_stl(load_unlabeled=load_unlabeled)
         if n_val_folds == 0 or n_val_folds is None:
             self.train_X, self.train_y = train_X, train_y
             self.val_X = np.zeros((0, 3, 96, 96), dtype=np.float32)
@@ -74,4 +78,5 @@ class STL (object):
             self.train_X, self.val_X = train_X[train_indices], train_X[val_indices]
             self.train_y, self.val_y = train_y[train_indices], train_y[val_indices]
         self.test_X, self.test_y = test_X, test_y
+        self.unlabeled_X = unlabeled_X
         self.class_names = class_names
