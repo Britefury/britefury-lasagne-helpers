@@ -317,9 +317,8 @@ class CacheingImageWindowExtractor (AbstractImageWindowExtractor):
         return windows
 
 
-class NonUniformImageWindowExtractor (object):
-    def __init__(self, images, image_read_fn, tiling, pad_mode='reflect', downsample=None, postprocess_fn=None,
-                 cache_size=None):
+class AbstractNonUniformImageWindowExtractor (object):
+    def __init__(self, images, image_read_fn, tiling, pad_mode='reflect', downsample=None, postprocess_fn=None):
         """
 
         :param images: a list of images to read; these can be paths, IDs, objects
@@ -333,31 +332,26 @@ class NonUniformImageWindowExtractor (object):
         if tiling.ndim != 2:
             raise ValueError('tiling should have 2 dimensions, not {}'.format(tiling.ndim))
 
-        self.cache_size = cache_size
-
-        if cache_size is not None:
-            self.cache = collections.OrderedDict()
-        else:
-            self.cache = None
-
         self.tiling_scheme = tiling
         self.N_images = len(images)
-
-        image_data = [image_read_fn(img) for img in images]
 
         self.extractors = []
         self.extractor_image_offsets = [0]
 
         images_by_shape = []
-        shape = image_data[0].shape[:2]
+        shape = None
 
-        for img in image_data:
-            img_shape = img.shape[:2]
+        for img_id in images:
+            img_arr = image_read_fn(img_id)
+            img_shape = img_arr.shape[:2]
+
+            if shape is None:
+                shape = img_shape
             if img_shape != shape:
                 self.__new_extractor(images_by_shape, shape, tiling, pad_mode, downsample, postprocess_fn)
                 images_by_shape = []
                 shape = img_shape
-            images_by_shape.append(img)
+            images_by_shape.append(self._image_to_append_to_image_list(img_id, img_arr))
         if len(images_by_shape) > 0:
             self.__new_extractor(images_by_shape, shape, tiling, pad_mode, downsample, postprocess_fn)
             images_by_shape = []
@@ -370,17 +364,17 @@ class NonUniformImageWindowExtractor (object):
 
 
     def __new_extractor(self, images, shape, tiling, pad_mode, downsample, postprocess_fn):
-        if self.cache is None:
-            extractor = ImageWindowExtractor(images, lambda x: x, tiling, pad_mode=pad_mode, downsample=downsample,
-                                             postprocess_fn=postprocess_fn)
-        else:
-            extractor = CacheingImageWindowExtractor(
-                images, lambda x: x, tiling, cache_size=self.cache_size, cache=self.cache,
-                pad_mode=pad_mode, downsample=downsample, postprocess_fn=postprocess_fn)
+        extractor = self._create_extractor(images, shape, tiling, pad_mode, downsample, postprocess_fn)
 
         self.extractors.append(extractor)
         pos = self.extractor_image_offsets[-1]
         self.extractor_image_offsets.append(pos + len(images))
+
+    def _create_extractor(self, images, shape, tiling, pad_mode, downsample, postprocess_fn):
+        raise NotImplementedError('Abstract for type {}'.format(type(self)))
+
+    def _image_to_append_to_image_list(self, image_id, img_array):
+        raise NotImplementedError('Abstract for type {}'.format(type(self)))
 
     def get_window(self, index):
         return self.get_windows(np.array([index]))[0,...]
@@ -476,6 +470,45 @@ class NonUniformImageWindowExtractor (object):
             shuffle_rng.shuffle(indices)
         for start_idx in range(0, self.N, batchsize):
             yield [self[indices[start_idx:start_idx + batchsize]]]
+
+
+class NonUniformImageWindowExtractor (AbstractNonUniformImageWindowExtractor):
+    def _create_extractor(self, images, shape, tiling, pad_mode, downsample, postprocess_fn):
+        return ImageWindowExtractor(
+            images, lambda x: x, tiling, pad_mode=pad_mode, downsample=downsample, postprocess_fn=postprocess_fn)
+
+    def _image_to_append_to_image_list(self, image_id, img_array):
+        return img_array
+
+
+class CacheingNonUniformImageWindowExtractor (AbstractNonUniformImageWindowExtractor):
+    def __init__(self, images, image_read_fn, tiling, pad_mode='reflect', downsample=None, postprocess_fn=None,
+                 cache_size=256):
+        """
+
+        :param images: a list of images to read; these can be paths, IDs, objects
+        :param image_read_fn: an image reader function of the form `fn(image) -> np.array[H,W,C]`
+        :param tiling: a `tiling_scheme.TilingScheme` instance that describes how windows are to be extracted
+        `from the data
+        :param postprocess_fn: [optional] a post processing function of the form
+        `postprocess_fn(extracted_windows) -> transformed_extracted_windows` that applies some sort of transformation
+        to the extracted data
+        """
+        self.cache_size = cache_size
+        self.cache = collections.OrderedDict()
+        self._image_read_fn = image_read_fn
+
+        super(CacheingNonUniformImageWindowExtractor, self).__init__(
+            images, image_read_fn, tiling, pad_mode=pad_mode, downsample=downsample, postprocess_fn=postprocess_fn)
+
+
+    def _create_extractor(self, images, shape, tiling, pad_mode, downsample, postprocess_fn):
+        return CacheingImageWindowExtractor(
+            images, self._image_read_fn, tiling, cache_size=self.cache_size, cache=self.cache,
+            pad_mode=pad_mode, downsample=downsample, postprocess_fn=postprocess_fn)
+
+    def _image_to_append_to_image_list(self, image_id, img_array):
+        return image_id
 
 
 class ImageWindowAssembler (object):
@@ -1089,7 +1122,7 @@ class Test_NonUniformImageWindowExtractor (unittest.TestCase):
         img2b = np.rollaxis(img2, 2, 0)
         img3b = np.rollaxis(img3, 2, 0)
 
-        wins = NonUniformImageWindowExtractor(images=[img0, img1, img2, img3], image_read_fn=lambda x: x,
+        wins = CacheingNonUniformImageWindowExtractor(images=[img0, img1, img2, img3], image_read_fn=lambda x: x,
                                               tiling=tiling_scheme.TilingScheme(tile_shape=(16, 16), step_shape=(1, 1)),
                                               cache_size=2)
 
