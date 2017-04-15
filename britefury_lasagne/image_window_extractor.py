@@ -320,7 +320,7 @@ class CacheingImageWindowExtractor (AbstractImageWindowExtractor):
 class AbstractNonUniformImageWindowExtractor (object):
     def __init__(self, images, image_read_fn, image_shape_fn, tiling,
                  pad_mode='reflect', downsample=None, postprocess_fn=None,
-                 reorder=False):
+                 reorder=True):
         """
 
         :param images: a list of images to read; these can be paths, IDs, objects
@@ -500,7 +500,7 @@ class NonUniformImageWindowExtractor (AbstractNonUniformImageWindowExtractor):
 
 class CacheingNonUniformImageWindowExtractor (AbstractNonUniformImageWindowExtractor):
     def __init__(self, images, image_read_fn, image_shape_fn, tiling, pad_mode='reflect',
-                 downsample=None, postprocess_fn=None, reorder=False, cache_size=256):
+                 downsample=None, postprocess_fn=None, reorder=True, cache_size=256):
         """
 
         :param images: a list of images to read; these can be paths, IDs, objects
