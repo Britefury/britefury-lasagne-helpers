@@ -128,7 +128,7 @@ class VGG16Model (AbstractVGGModel):
     @classmethod
     def build_network_final_layer(cls, input_shape=None, pool_layers_to_expand=None,
                                   pool_layers_to_remove=None,
-                                  full_conv=False, pad_fc6=False, **kwargs):
+                                  full_conv=False, pad_fc6=False, last_layer_name=None, **kwargs):
         if pool_layers_to_expand is None:
             pool_layers_to_expand = set()
         elif isinstance(pool_layers_to_expand, six.string_types):
@@ -155,80 +155,141 @@ class VGG16Model (AbstractVGGModel):
 
         dilation = 1
 
-        # Input layer: shape is of the form (sample, channel, height, width).
-        # We leave the sample dimension with no size (`None`) so that the
-        # minibatch size is whatever we need it to be when we use it
-        net = InputLayer((None,) + input_shape, name='input')
+        try:
+            # Input layer: shape is of the form (sample, channel, height, width).
+            # We leave the sample dimension with no size (`None`) so that the
+            # minibatch size is whatever we need it to be when we use it
+            net = InputLayer((None,) + input_shape, name='input')
+            if last_layer_name == 'input':
+                raise StopIteration
 
-        # First two convolutional layers: 64 filters, 3x3 convolution, 1 pixel padding
-        net, dilation = cls.conv_2d_layer(net, 'conv1_1', 64, 3, dilation)
-        net, dilation = cls.conv_2d_layer(net, 'conv1_2', 64, 3, dilation)
-        # 2x2 max-pooling; will reduce size from 224x224 to 112x112
-        net, dilation = cls.pool_2d_layer(net, 'pool1', 2, dilation, pool_layers_to_expand,
-                                          pool_layers_to_remove)
+            # First two convolutional layers: 64 filters, 3x3 convolution, 1 pixel padding
+            net, dilation = cls.conv_2d_layer(net, 'conv1_1', 64, 3, dilation)
+            if last_layer_name == 'conv1_1':
+                raise StopIteration
+            net, dilation = cls.conv_2d_layer(net, 'conv1_2', 64, 3, dilation)
+            if last_layer_name == 'conv1_2':
+                raise StopIteration
+            # 2x2 max-pooling; will reduce size from 224x224 to 112x112
+            net, dilation = cls.pool_2d_layer(net, 'pool1', 2, dilation, pool_layers_to_expand,
+                                              pool_layers_to_remove)
+            if last_layer_name == 'pool1':
+                raise StopIteration
 
-        # Two convolutional layers, 128 filters
-        net, dilation = cls.conv_2d_layer(net, 'conv2_1', 128, 3, dilation)
-        net, dilation = cls.conv_2d_layer(net, 'conv2_2', 128, 3, dilation)
-        # 2x2 max-pooling; will reduce size from 112x112 to 56x56
-        net, dilation = cls.pool_2d_layer(net, 'pool2', 2, dilation, pool_layers_to_expand,
-                                          pool_layers_to_remove)
+            # Two convolutional layers, 128 filters
+            net, dilation = cls.conv_2d_layer(net, 'conv2_1', 128, 3, dilation)
+            if last_layer_name == 'conv2_1':
+                raise StopIteration
+            net, dilation = cls.conv_2d_layer(net, 'conv2_2', 128, 3, dilation)
+            if last_layer_name == 'conv2_2':
+                raise StopIteration
+            # 2x2 max-pooling; will reduce size from 112x112 to 56x56
+            net, dilation = cls.pool_2d_layer(net, 'pool2', 2, dilation, pool_layers_to_expand,
+                                              pool_layers_to_remove)
+            if last_layer_name == 'pool2':
+                raise StopIteration
 
-        # Three convolutional layers, 256 filters
-        net, dilation = cls.conv_2d_layer(net, 'conv3_1', 256, 3, dilation)
-        net, dilation = cls.conv_2d_layer(net, 'conv3_2', 256, 3, dilation)
-        net, dilation = cls.conv_2d_layer(net, 'conv3_3', 256, 3, dilation)
-        # 2x2 max-pooling; will reduce size from 56x56 to 28x28
-        net, dilation = cls.pool_2d_layer(net, 'pool3', 2, dilation, pool_layers_to_expand,
-                                          pool_layers_to_remove)
+            # Three convolutional layers, 256 filters
+            net, dilation = cls.conv_2d_layer(net, 'conv3_1', 256, 3, dilation)
+            if last_layer_name == 'conv3_1':
+                raise StopIteration
+            net, dilation = cls.conv_2d_layer(net, 'conv3_2', 256, 3, dilation)
+            if last_layer_name == 'conv3_2':
+                raise StopIteration
+            net, dilation = cls.conv_2d_layer(net, 'conv3_3', 256, 3, dilation)
+            if last_layer_name == 'conv3_3':
+                raise StopIteration
+            # 2x2 max-pooling; will reduce size from 56x56 to 28x28
+            net, dilation = cls.pool_2d_layer(net, 'pool3', 2, dilation, pool_layers_to_expand,
+                                              pool_layers_to_remove)
+            if last_layer_name == 'pool3':
+                raise StopIteration
 
-        # Three convolutional layers, 512 filters
-        net, dilation = cls.conv_2d_layer(net, 'conv4_1', 512, 3, dilation)
-        net, dilation = cls.conv_2d_layer(net, 'conv4_2', 512, 3, dilation)
-        net, dilation = cls.conv_2d_layer(net, 'conv4_3', 512, 3, dilation)
-        # 2x2 max-pooling; will reduce size from 28x28 to 14x14
-        net, dilation = cls.pool_2d_layer(net, 'pool4', 2, dilation, pool_layers_to_expand,
-                                          pool_layers_to_remove)
+            # Three convolutional layers, 512 filters
+            net, dilation = cls.conv_2d_layer(net, 'conv4_1', 512, 3, dilation)
+            if last_layer_name == 'conv4_1':
+                raise StopIteration
+            net, dilation = cls.conv_2d_layer(net, 'conv4_2', 512, 3, dilation)
+            if last_layer_name == 'conv4_2':
+                raise StopIteration
+            net, dilation = cls.conv_2d_layer(net, 'conv4_3', 512, 3, dilation)
+            if last_layer_name == 'conv4_3':
+                raise StopIteration
+            # 2x2 max-pooling; will reduce size from 28x28 to 14x14
+            net, dilation = cls.pool_2d_layer(net, 'pool4', 2, dilation, pool_layers_to_expand,
+                                              pool_layers_to_remove)
+            if last_layer_name == 'pool4':
+                raise StopIteration
 
-        # Three convolutional layers, 512 filters
-        net, dilation = cls.conv_2d_layer(net, 'conv5_1', 512, 3, dilation)
-        net, dilation = cls.conv_2d_layer(net, 'conv5_2', 512, 3, dilation)
-        net, dilation = cls.conv_2d_layer(net, 'conv5_3', 512, 3, dilation)
-        # 2x2 max-pooling; will reduce size from 14x14 to 7x7
-        net, dilation = cls.pool_2d_layer(net, 'pool5', 2, dilation, pool_layers_to_expand,
-                                          pool_layers_to_remove)
+            # Three convolutional layers, 512 filters
+            net, dilation = cls.conv_2d_layer(net, 'conv5_1', 512, 3, dilation)
+            if last_layer_name == 'conv5_1':
+                raise StopIteration
+            net, dilation = cls.conv_2d_layer(net, 'conv5_2', 512, 3, dilation)
+            if last_layer_name == 'conv5_2':
+                raise StopIteration
+            net, dilation = cls.conv_2d_layer(net, 'conv5_3', 512, 3, dilation)
+            if last_layer_name == 'conv5_3':
+                raise StopIteration
+            # 2x2 max-pooling; will reduce size from 14x14 to 7x7
+            net, dilation = cls.pool_2d_layer(net, 'pool5', 2, dilation, pool_layers_to_expand,
+                                              pool_layers_to_remove)
+            if last_layer_name == 'pool5':
+                raise StopIteration
 
-        if dilation == 1 and not full_conv:
-            # Dense layer, 4096 units
-            net = DenseLayer(net, num_units=4096, name='fc6')
-            # 50% dropout (only applied during training, turned off during prediction)
-            net = DropoutLayer(net, p=0.5, name='fc6_dropout')
+            if dilation == 1 and not full_conv:
+                # Dense layer, 4096 units
+                net = DenseLayer(net, num_units=4096, name='fc6')
+                if last_layer_name == 'fc6':
+                    raise StopIteration
+                # 50% dropout (only applied during training, turned off during prediction)
+                net = DropoutLayer(net, p=0.5, name='fc6_dropout')
+                if last_layer_name == 'fc6_dropout':
+                    raise StopIteration
 
-            # Dense layer, 4096 units
-            net = DenseLayer(net, num_units=4096, name='fc7')
-            # 50% dropout (only applied during training, turned off during prediction)
-            net = DropoutLayer(net, p=0.5, name='fc7_dropout')
+                # Dense layer, 4096 units
+                net = DenseLayer(net, num_units=4096, name='fc7')
+                if last_layer_name == 'fc7':
+                    raise StopIteration
+                # 50% dropout (only applied during training, turned off during prediction)
+                net = DropoutLayer(net, p=0.5, name='fc7_dropout')
+                if last_layer_name == 'fc7_dropout':
+                    raise StopIteration
 
-            # Final dense layer, 1000 units: 1 for each class
-            net = DenseLayer(net, num_units=1000, nonlinearity=None, name='fc8')
-            # Softmax non-linearity that will generate probabilities
-            net = NonlinearityLayer(net, softmax, name='prob')
-        elif full_conv:
-            # Dense layer as 7x7 convolution, 4096 units
-            fc6_padding = 3 if pad_fc6 else 0
-            net, dilation = cls.conv_2d_layer(net, 'fc6', 4096, 7, dilation, pad=fc6_padding)
-            # 50% dropout (only applied during training, turned off during prediction)
-            net = DropoutLayer(net, p=0.5, name='fc6_dropout')
+                # Final dense layer, 1000 units: 1 for each class
+                net = DenseLayer(net, num_units=1000, nonlinearity=None, name='fc8')
+                if last_layer_name == 'fc8':
+                    raise StopIteration
+                # Softmax non-linearity that will generate probabilities
+                net = NonlinearityLayer(net, softmax, name='prob')
+            elif full_conv:
+                # Dense layer as 7x7 convolution, 4096 units
+                fc6_padding = 3 if pad_fc6 else 0
+                net, dilation = cls.conv_2d_layer(net, 'fc6', 4096, 7, dilation, pad=fc6_padding)
+                if last_layer_name == 'fc6':
+                    raise StopIteration
+                # 50% dropout (only applied during training, turned off during prediction)
+                net = DropoutLayer(net, p=0.5, name='fc6_dropout')
+                if last_layer_name == 'fc6_dropout':
+                    raise StopIteration
 
-            # Dense layer, 4096 units
-            net, dilation = cls.nin_layer(net, 'fc7', 4096, dilation)
-            # 50% dropout (only applied during training, turned off during prediction)
-            net = DropoutLayer(net, p=0.5, name='fc7_dropout')
+                # Dense layer, 4096 units
+                net, dilation = cls.nin_layer(net, 'fc7', 4096, dilation)
+                if last_layer_name == 'fc7':
+                    raise StopIteration
+                # 50% dropout (only applied during training, turned off during prediction)
+                net = DropoutLayer(net, p=0.5, name='fc7_dropout')
+                if last_layer_name == 'fc7_dropout':
+                    raise StopIteration
 
-            # Final dense layer, 1000 units: 1 for each class
-            net, dilation = cls.nin_layer(net, 'fc8', 1000, dilation, nonlinearity=None)
-            # Softmax non-linearity that will generate probabilities
-            net = NonlinearityLayer(net, functools.partial(util.flexible_softmax, axis=1), name='prob')
+                # Final dense layer, 1000 units: 1 for each class
+                net, dilation = cls.nin_layer(net, 'fc8', 1000, dilation, nonlinearity=None)
+                if last_layer_name == 'fc8':
+                    raise StopIteration
+                # Softmax non-linearity that will generate probabilities
+                net = NonlinearityLayer(net, functools.partial(util.flexible_softmax, axis=1), name='prob')
+        except StopIteration:
+            pass
 
         return net
 
