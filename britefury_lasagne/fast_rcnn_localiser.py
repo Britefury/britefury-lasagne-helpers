@@ -448,8 +448,10 @@ def ground_truth_boxes_to_y_direct(anchor_grid_origin, anchor_grid_cell_size, an
         raise ValueError('ground_truth_boxes must have shape (N,4), not {}'.format(ground_truth_bboxes.shape))
     if box_classes is not None:
         box_classes = np.array(box_classes, dtype=np.int32)
-        if box_classes.min() < 1:
-            raise ValueError('All box classes should be >= 1')
+        if box_classes.shape[0] != ground_truth_bboxes.shape[0]:
+            raise ValueError('Number of box classes ({}) does not match number of ground truth boxes ({})'.format(
+                box_classes.shape[0], ground_truth_bboxes.shape[0]
+            ))
 
     n_anchors = anchor_box_sizes.shape[0]
 
@@ -482,19 +484,37 @@ def ground_truth_boxes_to_y_direct(anchor_grid_origin, anchor_grid_cell_size, an
     best_iou_for_anchors = anchor_gt_iou.max(axis=1)
     best_anchor_index_for_gt = anchor_gt_iou.argmax(axis=0)
     best_iou_for_gt = anchor_gt_iou.max(axis=0)
-    best_anchor_index_for_gt = np.where(anchor_gt_iou == best_iou_for_gt)[0]
+    best_anchor_index_for_gt, best_gt_index_for_gt = np.where(anchor_gt_iou == best_iou_for_gt)
 
-    # label: 1 is positive, 0 is negative, -1 is dont care
+    anchor_coverage_over_upper = best_iou_for_anchors >= coverage_upper_threshold
+    anchor_coverage_under_lower = best_iou_for_anchors <= coverage_lower_threshold
+
     y_objectness_flat = np.zeros((len(valid_anchor_indices),), dtype=np.int32)
-    y_objectness_flat[best_iou_for_anchors >= coverage_upper_threshold] = 1
-    y_objectness_flat[best_anchor_index_for_gt] = 1
+    if box_classes is None:
+        y_objectness_flat[anchor_coverage_over_upper] = 1
+        y_objectness_flat[best_anchor_index_for_gt] = 1
+    else:
+        y_objectness_flat[anchor_coverage_over_upper] = box_classes[best_gt_index_for_anchors][anchor_coverage_over_upper]
+        y_objectness_flat[best_anchor_index_for_gt] = box_classes[best_gt_index_for_gt]
+
     y_obj_mask_flat = np.zeros((len(valid_anchor_indices),), dtype=np.float32)
-    y_obj_mask_flat[best_iou_for_anchors <= coverage_lower_threshold] = 1.0
-    y_obj_mask_flat[best_iou_for_anchors >= coverage_upper_threshold] = 1.0
-    y_obj_mask_flat[best_anchor_index_for_gt] = 1.0
+    y_obj_mask_flat[anchor_coverage_under_lower] = 1.0
+    if box_classes is None:
+        y_obj_mask_flat[anchor_coverage_over_upper] = 1.0
+        y_obj_mask_flat[best_anchor_index_for_gt] = 1.0
+    else:
+        y_obj_mask_flat[anchor_coverage_over_upper] = \
+            box_classes[best_gt_index_for_anchors][anchor_coverage_over_upper] >= 1
+        y_obj_mask_flat[best_anchor_index_for_gt] = box_classes[best_gt_index_for_gt] >= 1
+
     y_boxes_mask_flat = np.zeros((len(valid_anchor_indices),), dtype=np.float32)
-    y_boxes_mask_flat[best_iou_for_anchors >= coverage_upper_threshold] = 1.0
-    y_boxes_mask_flat[best_anchor_index_for_gt] = 1.0
+    if box_classes is None:
+        y_boxes_mask_flat[anchor_coverage_over_upper] = 1.0
+        y_boxes_mask_flat[best_anchor_index_for_gt] = 1.0
+    else:
+        y_boxes_mask_flat[anchor_coverage_over_upper] = \
+            box_classes[best_gt_index_for_anchors][anchor_coverage_over_upper] >= 1
+        y_boxes_mask_flat[best_anchor_index_for_gt] = box_classes[best_gt_index_for_gt] >= 1
 
     valid_anchor_cen_y = (valid_anchor_bboxes[:, 0] + valid_anchor_bboxes[:, 2]) * 0.5
     valid_anchor_cen_x = (valid_anchor_bboxes[:, 1] + valid_anchor_bboxes[:, 3]) * 0.5
@@ -650,12 +670,15 @@ def non_maximal_suppression(bboxes, box_conf, iou_threshold):
         return np.zeros((0,), dtype=int)
 
 
-def evaluate_predictions(gt_bboxes, pred_bboxes, pred_box_conf, iou_threshold):
+def evaluate_predictions(gt_bboxes, gt_bbox_mask, pred_bboxes, pred_box_conf, iou_threshold):
     order = np.argsort(-pred_box_conf)
     pred_bboxes = pred_bboxes[order]
     pred_box_conf = pred_box_conf[order]
 
-    n_gt = gt_bboxes.shape[0]
+    if gt_bbox_mask is not None:
+        n_gt = int(gt_bbox_mask.sum())
+    else:
+        n_gt = gt_bboxes.shape[0]
     gt_detected = np.zeros((gt_bboxes.shape[0],), dtype=bool)
     true_pos = np.zeros((order.shape[0],), dtype=int)
     false_pos = np.zeros((order.shape[0],), dtype=int)
@@ -686,7 +709,8 @@ def evaluate_predictions(gt_bboxes, pred_bboxes, pred_box_conf, iou_threshold):
 
         if max_iou > iou_threshold:
             if not gt_detected[max_iou_gt_ndx]:
-                true_pos[pred_i] = 1
+                if gt_bbox_mask is None or gt_bbox_mask[max_iou_gt_ndx]:
+                    true_pos[pred_i] = 1
                 gt_detected[max_iou_gt_ndx] = True
             else:
                 false_pos[pred_i] = 1
