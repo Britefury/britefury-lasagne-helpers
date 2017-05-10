@@ -19,7 +19,8 @@ class AbstractImageNetModel (object):
                  model_default_image_size, input_shape=None, last_layer_name=None,
                  **kwargs):
         # Build the network
-        final_layer = self.build_network_final_layer(input_shape=input_shape, **kwargs)
+        final_layer = self.build_network_final_layer(input_shape=input_shape, last_layer_name=last_layer_name,
+                                                     **kwargs)
         # Generate dictionary mapping layer name to layer
         network = self._final_layer_to_network_dict(final_layer)
 
@@ -52,7 +53,7 @@ class AbstractImageNetModel (object):
         return net_dict
 
     @classmethod
-    def build_network_final_layer(cls, input_shape=None, **kwargs):
+    def build_network_final_layer(cls, input_shape=None, last_layer_name=None, **kwargs):
         raise NotImplementedError('Abstract for type {}'.format(cls))
 
     @classmethod
