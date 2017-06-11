@@ -533,7 +533,7 @@ def train(train_set, val_set=None, test_set=None, train_batch_func=None,
                 progress_iter_func, desc='Epoch {} train'.format(epoch + 1))
         else:
             train_prog_iter = None
-        train_results = train_set.mean_batch_map(
+        train_results = train_set.batch_map_mean(
             train_batch_func, batchsize, shuffle=shuffle_rng,
             progress_iter_func=train_prog_iter, sum_axis=None,
             prepend_args=train_epoch_args)
@@ -567,7 +567,7 @@ def train(train_set, val_set=None, test_set=None, train_batch_func=None,
                     progress_iter_func, desc='Epoch {} val'.format(epoch + 1))
             else:
                 val_prog_iter = None
-            validation_results = val_set.mean_batch_map(
+            validation_results = val_set.batch_map_mean(
                 eval_batch_func, batchsize, progress_iter_func=val_prog_iter,
                 sum_axis=None)
             if store_state_after_epoch is None or \
@@ -597,7 +597,7 @@ def train(train_set, val_set=None, test_set=None, train_batch_func=None,
                                 desc='Epoch {} test'.format(epoch + 1))
                         else:
                             test_prog_iter = None
-                        test_results = test_set.mean_batch_map(
+                        test_results = test_set.batch_map_mean(
                             eval_batch_func, batchsize,
                             progress_iter_func=test_prog_iter, sum_axis=None)
         else:
@@ -611,7 +611,7 @@ def train(train_set, val_set=None, test_set=None, train_batch_func=None,
                     desc='Epoch {} test'.format(epoch + 1))
             else:
                 test_prog_iter = None
-            test_results = test_set.mean_batch_map(
+            test_results = test_set.batch_map_mean(
                 eval_batch_func, batchsize,
                 progress_iter_func=test_prog_iter, sum_axis=None)
 
