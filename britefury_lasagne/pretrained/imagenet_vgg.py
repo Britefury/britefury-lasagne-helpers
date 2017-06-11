@@ -128,7 +128,9 @@ class VGG16Model (AbstractVGGModel):
     @classmethod
     def build_network_final_layer(cls, input_shape=None, pool_layers_to_expand=None,
                                   pool_layers_to_remove=None,
-                                  full_conv=False, pad_fc6=False, last_layer_name=None, **kwargs):
+                                  full_conv=False, pad_fc6=False, last_layer_name=None,
+                                  input_layer_constructor=None,
+                                  **kwargs):
         if pool_layers_to_expand is None:
             pool_layers_to_expand = set()
         elif isinstance(pool_layers_to_expand, six.string_types):
@@ -156,10 +158,13 @@ class VGG16Model (AbstractVGGModel):
         dilation = 1
 
         try:
-            # Input layer: shape is of the form (sample, channel, height, width).
-            # We leave the sample dimension with no size (`None`) so that the
-            # minibatch size is whatever we need it to be when we use it
-            net = InputLayer((None,) + input_shape, name='input')
+            if input_layer_constructor is None:
+                # Input layer: shape is of the form (sample, channel, height, width).
+                # We leave the sample dimension with no size (`None`) so that the
+                # minibatch size is whatever we need it to be when we use it
+                net = InputLayer((None,) + input_shape, name='input')
+            else:
+                net = input_layer_constructor()
             if last_layer_name == 'input':
                 raise StopIteration
 
