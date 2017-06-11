@@ -3,7 +3,7 @@ import six
 import time
 import functools
 import lasagne
-from . import data_source
+from batchup import data_source
 
 
 VERBOSITY_NONE = None
