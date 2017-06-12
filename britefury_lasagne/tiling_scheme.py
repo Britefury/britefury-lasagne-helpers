@@ -22,6 +22,16 @@ def compute_pad_or_crop(source_shape, dest_shape):
         raise ValueError('source_shape has {} dimensions, dest_shape has {}; should be the same'.format(len(source_shape), len(dest_shape)))
     return [_dim_pad_crop(s, d) for s, d in zip(source_shape, dest_shape)]
 
+def padding_to_slice(p):
+    start = p[0] if p[0] > 0 else None
+    stop = -p[1] if p[1] > 0 else None
+    return slice(start, stop)
+
+def crop_to_slice(c):
+    start = -c[0] if c[0] > 0 else None
+    stop = c[1] if c[1] > 0 else None
+    return slice(start, stop)
+
 def _add_pad_or_crop(x, y):
     if x is not None and y is not None:
         return x[0] + y[0], x[1] + y[1]
@@ -161,9 +171,7 @@ class DataTilingScheme (object):
         for pc in self.data_pad_or_crop:
             c = slice(None)
             if pc is not None:
-                start = pc[0] if pc[0] > 0 else None
-                stop = -pc[1] if pc[1] > 0 else None
-                c = slice(start, stop)
+                c = padding_to_slice(pc)
             padding.append(c)
             non_zero = non_zero or c != slice(None)
         return padding if non_zero else None
@@ -187,9 +195,7 @@ class DataTilingScheme (object):
         for pc in self.data_pad_or_crop:
             c = slice(None)
             if pc is not None:
-                start = -pc[0] if pc[0] < 0 else None
-                stop = pc[1] if pc[1] < 0 else None
-                c = slice(start, stop)
+                c = crop_to_slice(pc)
             cropping.append(c)
             non_zero = non_zero or c != slice(None)
         return cropping if non_zero else None
