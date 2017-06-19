@@ -4,7 +4,8 @@ from functools import partial
 import theano
 import theano.tensor as T
 import lasagne
-from . import trainer, dnn_objective, data_source
+from batchup import data_source
+from . import trainer, dnn_objective
 
 
 def _is_sequence_of_layers(xs):
@@ -254,8 +255,7 @@ class BasicDNN (object):
         e.g. a simple classifier will return the list `[pred_prob]` where `pred_prob` is the predicted class
         probabilities
         """
-        y = []
-        return data_source.coerce_data_source(X).batch_map(self._predict_fn, batch_size=batchsize)
+        return data_source.coerce_data_source(X).batch_map_concat(self._predict_fn, batch_size=batchsize)
 
 
 class BasicClassifierDNN (BasicDNN):
