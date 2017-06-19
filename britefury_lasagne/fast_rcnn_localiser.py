@@ -525,6 +525,12 @@ def ground_truth_boxes_to_y_direct(anchor_grid_origin, anchor_grid_cell_size, an
     box_rel_x = (gt_centre[best_gt_index_for_anchors, 1] - valid_anchor_cen_x) * 2.0 / valid_anchor_w
     box_rel_h = np.log(gt_size[best_gt_index_for_anchors, 0] / valid_anchor_h)
     box_rel_w = np.log(gt_size[best_gt_index_for_anchors, 1] / valid_anchor_w)
+
+    box_rel_y[best_anchor_index_for_gt] = (gt_centre[best_gt_index_for_gt, 0] - valid_anchor_cen_y[best_anchor_index_for_gt]) * 2.0 / valid_anchor_h[best_anchor_index_for_gt]
+    box_rel_x[best_anchor_index_for_gt] = (gt_centre[best_gt_index_for_gt, 1] - valid_anchor_cen_x[best_anchor_index_for_gt]) * 2.0 / valid_anchor_w[best_anchor_index_for_gt]
+    box_rel_h[best_anchor_index_for_gt] = np.log(gt_size[best_gt_index_for_gt, 0] / valid_anchor_h[best_anchor_index_for_gt])
+    box_rel_w[best_anchor_index_for_gt] = np.log(gt_size[best_gt_index_for_gt, 1] / valid_anchor_w[best_anchor_index_for_gt])
+
     y_rel_boxes_flat = np.concatenate([box_rel_y[:, None], box_rel_x[:, None], box_rel_h[:, None], box_rel_w[:, None]],
                                       axis=1)
     y_rel_boxes_flat = y_rel_boxes_flat * y_boxes_mask_flat[:, None]
@@ -576,10 +582,10 @@ def y_to_boxes(y_obj_class, y_obj_confidence, y_relboxes, anchor_grid_origin, an
         y = np.arange(n_y) * anchor_grid_cell_size[0] + anchor_grid_origin[0]
         x = np.arange(n_x) * anchor_grid_cell_size[1] + anchor_grid_origin[1]
 
-        cen_y = (y_relboxes[2, :, :, :] * anchor_box_sizes[:, 0, None, None] * 0.5 + y[None, :, None]).flatten()
-        cen_x = (y_relboxes[3, :, :, :] * anchor_box_sizes[:, 1, None, None] * 0.5 + x[None, None, :]).flatten()
-        h = (np.exp(y_relboxes[0, :, :, :]) * anchor_box_sizes[:, 0, None, None]).flatten()
-        w = (np.exp(y_relboxes[1, :, :, :]) * anchor_box_sizes[:, 1, None, None]).flatten()
+        cen_y = (y_relboxes[0, :, :, :] * anchor_box_sizes[:, 0, None, None] * 0.5 + y[None, :, None]).flatten()
+        cen_x = (y_relboxes[1, :, :, :] * anchor_box_sizes[:, 1, None, None] * 0.5 + x[None, None, :]).flatten()
+        h = (np.exp(y_relboxes[2, :, :, :]) * anchor_box_sizes[:, 0, None, None]).flatten()
+        w = (np.exp(y_relboxes[3, :, :, :]) * anchor_box_sizes[:, 1, None, None]).flatten()
     else:
         box_mask = y_obj_class != 0
         ndx = np.indices(box_mask.shape).reshape((3, -1))[:, box_mask.flatten()].T
@@ -590,10 +596,10 @@ def y_to_boxes(y_obj_class, y_obj_confidence, y_relboxes, anchor_grid_origin, an
         y = cell_y.astype(float) * anchor_grid_cell_size[0] + anchor_grid_origin[0]
         x = cell_x.astype(float) * anchor_grid_cell_size[1] + anchor_grid_origin[1]
 
-        cen_y = y_relboxes[2, anchor_i, cell_y, cell_x] * anchor_box_sizes[anchor_i, 0] * 0.5 + y
-        cen_x = y_relboxes[3, anchor_i, cell_y, cell_x] * anchor_box_sizes[anchor_i, 1] * 0.5 + x
-        h = np.exp(y_relboxes[0, anchor_i, cell_y, cell_x]) * anchor_box_sizes[anchor_i, 0]
-        w = np.exp(y_relboxes[1, anchor_i, cell_y, cell_x]) * anchor_box_sizes[anchor_i, 1]
+        cen_y = y_relboxes[0, anchor_i, cell_y, cell_x] * anchor_box_sizes[anchor_i, 0] * 0.5 + y
+        cen_x = y_relboxes[1, anchor_i, cell_y, cell_x] * anchor_box_sizes[anchor_i, 1] * 0.5 + x
+        h = np.exp(y_relboxes[2, anchor_i, cell_y, cell_x]) * anchor_box_sizes[anchor_i, 0]
+        w = np.exp(y_relboxes[3, anchor_i, cell_y, cell_x]) * anchor_box_sizes[anchor_i, 1]
 
 
     lower_y = cen_y - h * 0.5
