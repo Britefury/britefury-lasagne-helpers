@@ -4,7 +4,8 @@ from functools import partial
 import theano
 import theano.tensor as T
 import lasagne
-from . import trainer, dnn_objective, data_source
+from batchup import data_source
+from . import trainer, dnn_objective
 
 
 def _is_sequence_of_layers(xs):
